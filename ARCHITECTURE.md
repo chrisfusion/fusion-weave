@@ -22,7 +22,8 @@ fusion-weave is a Kubernetes operator that schedules configurable job DAGs. This
 9. [Shared storage](#shared-storage)
 10. [Deploy steps and health monitoring](#deploy-steps-and-health-monitoring)
 11. [REST API server](#rest-api-server)
-12. [End-to-end flow](#end-to-end-flow)
+12. [Monitoring API server](#monitoring-api-server)
+13. [End-to-end flow](#end-to-end-flow)
 
 ---
 
@@ -114,11 +115,30 @@ internal/
 
   apiserver/
     server.go        — Config, Server, Start()
-    router.go        — chi router, health routes, /api/v1 sub-router
+    router.go        — chi router, health routes, /api/v1 sub-router, /monitor/v1 sub-router
     types.go         — APIError exported type
     auth/            — APIKeyValidator, OIDCValidator, SAValidator, Authenticator
     middleware/       — Recovery, Logging, Auth (sync.Once), RBAC
     handlers/        — ResourceHandler interface + 5 CRD handler structs
+
+  monitoring/
+    config.go        — Config struct (Namespace, Client, KubeClient, CacheTTL, MaxLogLines, Sink)
+    routes.go        — RegisterRoutes() wires all 10 GET routes onto a chi sub-router
+    metrics_server.go — standalone http.Server on METRICS_ADDR serving promhttp.Handler()
+    cache/
+      cache.go       — generic TTLCache[K, V] with lazy eviction (RWMutex)
+    logsink/
+      sink.go        — Sink interface + LogSnapshot type + NoopSink
+      kafka.go       — KafkaSink: buffered channel + drainLoop goroutine, stop/done shutdown
+    handlers/
+      base.go        — Base struct (shared deps) + cacheGet/writeJSON/writeError helpers
+      metrics.go     — promauto Prometheus metrics (requests, duration, cache hits, run phase gauge)
+      runs.go        — RunsHandler: List (summaries) + Get (run+jobs+events detail)
+      jobs.go        — JobsHandler: List + Get batch/v1 Jobs for a run
+      logs.go        — LogsHandler: pod log snapshot + async sink.Publish
+      events.go      — EventsHandler: events for a run + all events with fieldSelector
+      deployments.go — DeploymentsHandler: Deployments owned by a chain
+      stats.go       — StatsHandler: RunStats + ChainStats with window filter
 
 config/
   crd/bases/         — generated CRD YAML (kubectl apply target)
@@ -415,6 +435,93 @@ Health endpoints (`/healthz`, `/readyz`) are registered **before** the auth midd
 ### PATCH semantics
 
 `PATCH` uses **JSON Merge Patch** (`application/merge-patch+json`). The handler fetches the current resource (populating `resourceVersion` for optimistic concurrency), then calls `client.Patch` with the raw merge-patch bytes. The API server applies the patch and returns the updated object.
+
+---
+
+## Monitoring API server
+
+The monitoring API is served as a sub-router under `/monitor/v1/` on the same `http.Server` and port as the CRUD API. It shares the same auth and RBAC middleware. It is gated behind `MonitoringEnabled` in the server config and only registered when enabled.
+
+### Package layout
+
+```
+internal/monitoring/
+  config.go          — Config: Namespace, Client, KubeClient, CacheTTL, MaxLogLines, Sink
+  routes.go          — RegisterRoutes(): constructs Cache + Base, wires 10 GET routes
+  metrics_server.go  — MetricsServer: http.Server on METRICS_ADDR, serves promhttp.Handler()
+  cache/
+    cache.go         — TTLCache[K comparable, V any]: RWMutex, lazy expiry on Get
+  logsink/
+    sink.go          — Sink interface, LogSnapshot struct, NoopSink
+    kafka.go         — KafkaSink: buffered channel (256), drainLoop goroutine
+  handlers/
+    base.go          — Base struct + cacheGet/writeJSON/writeError/nameFromURL helpers
+    metrics.go       — Prometheus metrics via promauto
+    runs.go, jobs.go, logs.go, events.go, deployments.go, stats.go
+```
+
+### Request lifecycle
+
+```
+GET /monitor/v1/<path>
+  → Auth middleware (same as CRUD API)
+  → RBAC middleware (viewer role required for all monitoring endpoints)
+  → handler.cacheGet(w, key)   — returns 200 from cache on hit (increments cacheHitsTotal)
+  → Kubernetes API / kubeClient call on miss
+  → cache.Set(key, result)
+  → writeJSON(w, 200, result)
+```
+
+### In-memory cache
+
+`TTLCache[K, V]` is a generic Go type. `Get` uses `RLock` to check existence and expiry, then re-acquires `WLock` to delete and return `(zero, false)` for expired entries. `Set` uses `WLock`. There is no background eviction goroutine — stale entries are pruned lazily on read.
+
+Cache keys follow a consistent scheme:
+
+| Key pattern | Handler |
+|---|---|
+| `runs:list` | RunsHandler.List |
+| `run:detail:<name>` | RunsHandler.Get |
+| `run:jobs:<name>` | JobsHandler.List |
+| `run:job:<name>:<jobName>` | JobsHandler.Get |
+| `run:logs:<name>:<step>` | LogsHandler.Get |
+| `run:events:<name>` | EventsHandler.ListForRun |
+| `events:all:<fieldSelector>` | EventsHandler.ListAll |
+| `chain:deployments:<name>` | DeploymentsHandler.List |
+| `stats:runs:<window>` | StatsHandler.RunStats |
+| `stats:chain:<name>:<window>` | StatsHandler.ChainStats |
+
+### Kafka log sink
+
+```
+LogsHandler.Get()
+  └─ fetches log snapshot from Kubernetes
+  └─ go sink.Publish(context.Background(), snap)   ← fire-and-forget goroutine
+         │
+         └─ KafkaSink.Publish()
+               └─ select { case ch <- snap ; case <-stop: return ErrClosed }
+                         │
+                    drainLoop goroutine
+                         └─ kafka-go writer.WriteMessages()
+```
+
+`KafkaSink.Close()` closes the `stop` channel and blocks on `<-done` until the drain loop flushes all buffered snapshots and closes the Kafka writer. If Kafka is not configured, `NoopSink` is used transparently.
+
+### Prometheus metrics server
+
+A separate `http.Server` is started on `METRICS_ADDR` (default `:9091`) when `MetricsAddr` is non-empty. It serves only `promhttp.Handler()` at `/metrics` with no auth middleware. Its lifecycle is tied to the parent `context.Context` passed to `Server.Start()`.
+
+Metrics registered by `internal/monitoring/handlers/metrics.go`:
+
+| Metric | Labels | Description |
+|---|---|---|
+| `weave_monitor_requests_total` | `path`, `status` | Request count per endpoint |
+| `weave_monitor_request_duration_seconds` | `path` | Latency histogram |
+| `weave_monitor_cache_hits_total` | — | Cache hits across all handlers |
+| `weave_monitor_cache_misses_total` | — | Cache misses across all handlers |
+| `weave_runs_by_phase` | `phase` | Current WeaveRun count per phase |
+
+`weave_runs_by_phase` is updated on every call to `RunsHandler.List` — the handler iterates the fresh (or cached) run list and resets all phase gauges.
 
 ---
 

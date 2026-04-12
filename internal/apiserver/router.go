@@ -13,9 +13,10 @@ import (
 	"fusion-platform.io/fusion-weave/internal/apiserver/auth"
 	"fusion-platform.io/fusion-weave/internal/apiserver/handlers"
 	"fusion-platform.io/fusion-weave/internal/apiserver/middleware"
+	"fusion-platform.io/fusion-weave/internal/monitoring"
 )
 
-func newRouter(cfg Config, c client.Client, authCfg auth.Config) http.Handler {
+func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitoring.Config) http.Handler {
 	r := chi.NewRouter()
 
 	// Global middleware applied to all routes.
@@ -37,6 +38,16 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config) http.Handler {
 		registerCRUD(r, "/triggers", handlers.NewTriggerHandler(c, cfg.Namespace))
 		registerCRUD(r, "/runs", handlers.NewRunHandler(c, cfg.Namespace))
 	})
+
+	// Monitoring API v1 — same auth/RBAC middleware; all endpoints are GET-only
+	// so the viewer role has full access automatically.
+	if cfg.MonitoringEnabled {
+		r.Route("/monitor/v1", func(r chi.Router) {
+			r.Use(middleware.Auth(authCfg))
+			r.Use(middleware.RBAC)
+			monitoring.RegisterRoutes(r, monCfg)
+		})
+	}
 
 	return r
 }

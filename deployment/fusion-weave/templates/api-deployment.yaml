@@ -48,9 +48,29 @@ spec:
               value: {{ .Values.api.auth.saAuthEnabled | toString | quote }}
             - name: ALLOW_UNAUTHENTICATED
               value: {{ .Values.api.auth.allowUnauthenticated | toString | quote }}
+            - name: MONITORING_ENABLED
+              value: {{ .Values.api.monitoring.enabled | toString | quote }}
+            - name: METRICS_ADDR
+              value: {{ printf ":%d" (int .Values.api.monitoring.metricsPort) | quote }}
+            - name: MONITOR_CACHE_TTL
+              value: {{ .Values.api.monitoring.cacheTTL | quote }}
+            - name: MONITOR_LOG_LINES
+              value: {{ .Values.api.monitoring.maxLogLines | toString | quote }}
+            {{- if .Values.api.monitoring.kafka.brokers }}
+            - name: KAFKA_ENABLED
+              value: "true"
+            - name: KAFKA_BROKERS
+              value: {{ .Values.api.monitoring.kafka.brokers | quote }}
+            - name: KAFKA_TOPIC
+              value: {{ .Values.api.monitoring.kafka.topic | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.api.service.port }}
+            {{- if .Values.api.monitoring.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.api.monitoring.metricsPort }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

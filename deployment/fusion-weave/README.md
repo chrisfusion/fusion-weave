@@ -139,6 +139,27 @@ All auth modes are disabled by default. Enable one or more as needed. Unauthenti
 | `editor` | GET, POST, PUT, PATCH |
 | `admin` | GET, POST, PUT, PATCH, DELETE |
 
+### Monitoring API
+
+| Key | Default | Description |
+|---|---|---|
+| `api.monitoring.enabled` | `false` | Mount `/monitor/v1/` routes on the API server and expose the metrics port. |
+| `api.monitoring.metricsPort` | `9091` | Port for the Prometheus `/metrics` endpoint (separate from the REST API port). |
+| `api.monitoring.cacheTTL` | `30s` | TTL for all monitoring response caches. Accepts Go duration strings (`30s`, `2m`). |
+| `api.monitoring.maxLogLines` | `100` | Maximum number of log lines returned per step log request. |
+| `api.monitoring.kafka.brokers` | `""` | Kafka broker address(es). Empty disables Kafka; logs are discarded after serving. |
+| `api.monitoring.kafka.topic` | `weave-logs` | Kafka topic for log snapshot messages. |
+
+Enable with API key auth and Prometheus scraping:
+
+```bash
+helm upgrade fusion-weave deployment/fusion-weave/ \
+  --reuse-values \
+  --set api.monitoring.enabled=true \
+  --set api.monitoring.metricsPort=9091 \
+  --set api.auth.apiKeyEnabled=true
+```
+
 ### Samples
 
 | Key | Default | Description |
@@ -188,4 +209,4 @@ curl http://localhost:8082/api/v1/runs
 | ClusterRole | `<release>-api-tokenreview` | TokenReview permission (when `api.auth.saAuthEnabled=true`) |
 | ClusterRoleBinding | `<release>-api-tokenreview` | Binds ClusterRole to SA (when `api.auth.saAuthEnabled=true`) |
 | Deployment | `<release>-api` | The REST API server (when `api.enabled=true`) |
-| Service | `<release>-api` | Exposes API port (when `api.enabled=true`) |
+| Service | `<release>-api` | Exposes API port and metrics port (when `api.enabled=true`; metrics port only when `api.monitoring.enabled=true`) |

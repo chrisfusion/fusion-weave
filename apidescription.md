@@ -978,3 +978,203 @@ curl -X DELETE -H "Authorization: Bearer $KEY" \
 | PUT | `/api/v1/runs/{name}` | editor | Full replace a WeaveRun |
 | PATCH | `/api/v1/runs/{name}` | editor | Partial update a WeaveRun |
 | DELETE | `/api/v1/runs/{name}` | admin | Delete a WeaveRun and its child resources |
+| GET | `/monitor/v1/runs` | viewer | List all WeaveRun summaries |
+| GET | `/monitor/v1/runs/{name}` | viewer | Run detail (run + jobs + events) |
+| GET | `/monitor/v1/runs/{name}/jobs` | viewer | batch/v1 Jobs for a run |
+| GET | `/monitor/v1/runs/{name}/jobs/{jobName}` | viewer | Single batch/v1 Job |
+| GET | `/monitor/v1/runs/{name}/steps/{step}/logs` | viewer | Pod log snapshot (last N lines) |
+| GET | `/monitor/v1/runs/{name}/events` | viewer | Kubernetes events for a run |
+| GET | `/monitor/v1/events` | viewer | All events (optional `?fieldSelector=`) |
+| GET | `/monitor/v1/chains/{name}/deployments` | viewer | Deployments owned by a chain |
+| GET | `/monitor/v1/stats/runs` | viewer | Aggregated run stats (`?window=`) |
+| GET | `/monitor/v1/stats/chains/{name}` | viewer | Per-chain run stats (`?window=`) |
+
+---
+
+## Monitoring API
+
+The monitoring API is enabled separately from the CRUD API (`MONITORING_ENABLED=true`). All monitoring endpoints are read-only (GET) and require at minimum `viewer` role. Responses are served from an in-memory TTL cache (default 30 s). Cache TTL is configurable via `MONITOR_CACHE_TTL`.
+
+### Base URL
+
+```
+http://<host>:8082/monitor/v1
+```
+
+---
+
+### GET /monitor/v1/runs
+
+Returns a summary list of all WeaveRuns in the managed namespace.
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/runs
+```
+
+```json
+[
+  {
+    "name": "etl-pipeline-run-1",
+    "chain": "etl-pipeline",
+    "phase": "Succeeded",
+    "startTime": "2026-04-12T02:00:05Z",
+    "completionTime": "2026-04-12T02:14:32Z",
+    "stepCount": 3,
+    "failedSteps": 0,
+    "message": ""
+  }
+]
+```
+
+---
+
+### GET /monitor/v1/runs/{name}
+
+Returns a detailed view: the full WeaveRun object, all associated batch/v1 Jobs, and Kubernetes Events for the run.
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/runs/etl-pipeline-run-1
+```
+
+```json
+{
+  "run": { ... },
+  "jobs": [ { ... } ],
+  "events": [ { ... } ]
+}
+```
+
+---
+
+### GET /monitor/v1/runs/{name}/jobs
+
+Returns all `batch/v1 Jobs` labelled `fusion-platform.io/run=<name>`.
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/runs/etl-pipeline-run-1/jobs
+```
+
+---
+
+### GET /monitor/v1/runs/{name}/jobs/{jobName}
+
+Returns a single batch/v1 Job by name.
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/monitor/v1/runs/etl-pipeline-run-1/jobs/etl-pipeline-run-1-extract-0
+```
+
+---
+
+### GET /monitor/v1/runs/{name}/steps/{step}/logs
+
+Returns a JSON snapshot of the last N log lines from the most recently created pod for the named step.
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/monitor/v1/runs/etl-pipeline-run-1/steps/extract/logs
+```
+
+```json
+{
+  "runName": "etl-pipeline-run-1",
+  "stepName": "extract",
+  "podName": "etl-pipeline-run-1-extract-0-abcde",
+  "lines": [
+    "Extracting records from source...",
+    "{\"records\": 1000, \"source\": \"db\"}"
+  ]
+}
+```
+
+`N` is configurable via `MONITOR_LOG_LINES` (default `100`). The response is cached; log lines are also published to the configured log sink asynchronously.
+
+---
+
+### GET /monitor/v1/runs/{name}/events
+
+Returns all Kubernetes `core/v1 Events` whose `involvedObject.name` matches the run name and `involvedObject.kind=WeaveRun`.
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/monitor/v1/runs/etl-pipeline-run-1/events
+```
+
+---
+
+### GET /monitor/v1/events
+
+Returns all Kubernetes Events in the managed namespace. Accepts an optional `?fieldSelector=` query parameter forwarded to the Kubernetes API.
+
+```bash
+# All events
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/events
+
+# Filter by reason
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8082/monitor/v1/events?fieldSelector=reason=BackOff"
+```
+
+The `fieldSelector` value is validated against an allowlist regex (`[a-zA-Z0-9./=!,_()\- ]{0,512}`) before use.
+
+---
+
+### GET /monitor/v1/chains/{name}/deployments
+
+Returns all `apps/v1 Deployments` labelled `fusion-platform.io/chain=<name>`.
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/monitor/v1/chains/ci-demo/deployments
+```
+
+---
+
+### GET /monitor/v1/stats/runs
+
+Returns aggregated statistics across all WeaveRuns within the specified time window.
+
+**Query parameters:**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `window` | `1h` | Time window. Accepts Go duration strings (`30m`, `2h`) or day suffix (`7d`). |
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8082/monitor/v1/stats/runs?window=24h"
+```
+
+```json
+{
+  "window": "24h",
+  "total": 12,
+  "succeeded": 10,
+  "failed": 1,
+  "running": 1,
+  "pending": 0,
+  "stopped": 0,
+  "successRate": 0.9090909090909091,
+  "avgDurationMs": 184200,
+  "minDurationMs": 94000,
+  "maxDurationMs": 421000
+}
+```
+
+**Window semantics:**
+- Completed runs: included if `startTime` or `completionTime` falls within the window.
+- Active runs: included only if `startTime` falls within the window (prevents old stuck runs from skewing stats).
+- `successRate` = `succeeded / (succeeded + failed + stopped)`.
+- Duration fields are `0` when no completed runs exist in the window.
+
+---
+
+### GET /monitor/v1/stats/chains/{name}
+
+Same as `/monitor/v1/stats/runs` but scoped to runs that belong to the named WeaveChain (filtered in-process by `spec.chainRef.name`).
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8082/monitor/v1/stats/chains/etl-pipeline?window=7d"
+```

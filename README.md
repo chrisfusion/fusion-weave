@@ -12,6 +12,9 @@ A Kubernetes operator that schedules configurable job DAGs. Define reusable job 
 - **WeaveTrigger** — fires runs on a cron schedule, on-demand annotation, or HTTP webhook
 - **WeaveRun** — execution record tracking per-step status, output capture, and phase
 - **REST API** — full CRUD over all five CRDs via a standalone HTTP service with API key, OIDC, and SA token authentication
+- **Monitoring API** — read-only observability endpoints at `/monitor/v1/` for run status, batch jobs, pod logs, deployment health, aggregated stats, and Kubernetes Events; backed by an in-memory TTL cache
+- **Prometheus metrics** — operator and API server metrics on a dedicated port (`:9091`), including per-phase run gauges and cache hit/miss counters
+- **Log streaming sink** — pluggable log sink interface with a Kafka implementation; log snapshots are published asynchronously after each fetch
 
 ## Architecture
 
@@ -27,6 +30,7 @@ internal/
   deploybuilder/     — translates WeaveServiceTemplate → apps/v1 Deployment + Service + Ingress
   trigger/           — cron scheduler and webhook HTTP server
   apiserver/         — REST API (router, auth, middleware, handlers)
+  monitoring/        — monitoring API (cache, logsink, handlers, Prometheus metrics server)
 
 config/
   crd/bases/         — generated CRD manifests
@@ -82,6 +86,41 @@ helm upgrade --install fusion-weave deployment/fusion-weave/ \
 ```
 
 See [deployment/fusion-weave/README.md](deployment/fusion-weave/README.md) for all available values.
+
+## Using the Monitoring API
+
+Enable the monitoring API with `--monitoring` (or `MONITORING_ENABLED=true`). It shares the same port and auth model as the CRUD API.
+
+```bash
+kubectl port-forward svc/fusion-weave-api 8082:8082 -n fusion &
+
+# Aggregated run statistics (last hour)
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/stats/runs
+
+# Stats for a specific chain over the last 24 h
+curl -H "Authorization: Bearer $KEY" "http://localhost:8082/monitor/v1/stats/chains/etl-pipeline?window=24h"
+
+# Full run status with jobs and events
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/runs/etl-run-1
+
+# Logs for a specific step (last 100 lines)
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/runs/etl-run-1/steps/extract/logs
+
+# All batch jobs for a run
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/runs/etl-run-1/jobs
+
+# Deployments owned by a chain
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/chains/ci-demo/deployments
+
+# Kubernetes events for a run
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/runs/etl-run-1/events
+
+# All events (optional field selector)
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8082/monitor/v1/events?fieldSelector=reason=Failed"
+```
+
+Responses are cached (default TTL: 30 s). Prometheus metrics are served separately on `:9091/metrics`.
 
 ## Using the REST API
 

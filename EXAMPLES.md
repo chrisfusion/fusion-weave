@@ -13,6 +13,7 @@ Practical recipes showing how to compose fusion-weave resources for real workloa
 - [On-demand run](#on-demand-run)
 - [Webhook trigger](#webhook-trigger)
 - [API key setup and usage](#api-key-setup-and-usage)
+- [Monitoring API — observing runs](#monitoring-api--observing-runs)
 
 ---
 
@@ -698,3 +699,117 @@ curl -H "Authorization: Bearer $KEY" \
 | … | … | Same pattern for `/chains`, `/triggers`, `/runs` |
 | GET | `/healthz` | Liveness probe (no auth) |
 | GET | `/readyz` | Readiness probe (no auth) |
+
+---
+
+## Monitoring API — observing runs
+
+The monitoring API is read-only and requires at least `viewer` role. Enable it with `MONITORING_ENABLED=true` (or `--set api.monitoring.enabled=true` in Helm).
+
+### Watch a run until completion
+
+```bash
+kubectl port-forward svc/fusion-weave-api 8082:8082 -n fusion &
+
+RUN=etl-manual-20260412
+while true; do
+  RESP=$(curl -s -H "Authorization: Bearer $KEY" \
+    http://localhost:8082/monitor/v1/runs/$RUN)
+  PHASE=$(echo $RESP | jq -r '.run.status.phase')
+  echo "phase: $PHASE"
+  [[ "$PHASE" == "Succeeded" || "$PHASE" == "Failed" ]] && break
+  sleep 5
+done
+```
+
+### Fetch step logs
+
+```bash
+# Last 100 lines from the "extract" step
+curl -s -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/monitor/v1/runs/etl-manual-20260412/steps/extract/logs | \
+  jq -r '.lines[]'
+```
+
+### Aggregate run statistics
+
+```bash
+# Last hour (default)
+curl -s -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/monitor/v1/stats/runs | jq .
+
+# Last 7 days
+curl -s -H "Authorization: Bearer $KEY" \
+  "http://localhost:8082/monitor/v1/stats/runs?window=7d" | jq .
+
+# Per-chain stats for the past 24 h
+curl -s -H "Authorization: Bearer $KEY" \
+  "http://localhost:8082/monitor/v1/stats/chains/etl-pipeline?window=24h" | jq .
+```
+
+Example response:
+```json
+{
+  "window": "24h",
+  "total": 12,
+  "succeeded": 10,
+  "failed": 1,
+  "running": 1,
+  "pending": 0,
+  "stopped": 0,
+  "successRate": 0.909,
+  "avgDurationMs": 184200,
+  "minDurationMs": 94000,
+  "maxDurationMs": 421000
+}
+```
+
+### Inspect jobs and events for a failed run
+
+```bash
+RUN=etl-manual-20260412
+
+# All batch jobs
+curl -s -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/monitor/v1/runs/$RUN/jobs | jq '.[].metadata.name'
+
+# Kubernetes events (shows warnings, scheduling failures, OOM kills)
+curl -s -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/monitor/v1/runs/$RUN/events | \
+  jq '.[] | select(.type == "Warning") | {reason, message}'
+```
+
+### Check deployment health for a chain
+
+```bash
+curl -s -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/monitor/v1/chains/ci-demo/deployments | \
+  jq '.[] | {name: .metadata.name, available: (.status.conditions[] | select(.type == "Available") | .status)}'
+```
+
+### Filter all events by reason
+
+```bash
+curl -s -H "Authorization: Bearer $KEY" \
+  "http://localhost:8082/monitor/v1/events?fieldSelector=reason=BackOff" | jq .
+```
+
+### Prometheus metrics
+
+```bash
+# Expose the metrics port (separate from the API port)
+kubectl port-forward svc/fusion-weave-api 9091:9091 -n fusion &
+
+# Scrape metrics
+curl -s http://localhost:9091/metrics | grep -E "^weave_"
+```
+
+Key metrics exposed:
+
+| Metric | Type | Description |
+|---|---|---|
+| `weave_monitor_requests_total` | Counter | Total monitoring API requests by path and status |
+| `weave_monitor_request_duration_seconds` | Histogram | Request latency by path |
+| `weave_monitor_cache_hits_total` | Counter | Cache hits across all monitoring handlers |
+| `weave_monitor_cache_misses_total` | Counter | Cache misses across all monitoring handlers |
+| `weave_runs_by_phase` | Gauge | Current run count per phase (Pending/Running/Succeeded/Failed/Stopped) |

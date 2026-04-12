@@ -15,4 +15,9 @@ spec:
     - name: http
       port: {{ .Values.api.service.port }}
       targetPort: {{ .Values.api.service.port }}
+    {{- if .Values.api.monitoring.enabled }}
+    - name: metrics
+      port: {{ .Values.api.monitoring.metricsPort }}
+      targetPort: {{ .Values.api.monitoring.metricsPort }}
+    {{- end }}
 {{- end }}

@@ -86,3 +86,19 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - Deploy with samples (shared-storage demo chain): add `--set samples.enabled=true --set samples.sharedStorage.storageClassName=csi-hostpath-sc`
 - `api.enabled=false` to skip deploying the API server entirely.
 - `api.auth.saAuthEnabled=true` to enable SA TokenReview auth (also creates ClusterRole + ClusterRoleBinding for tokenreviews).
+
+## Monitoring API (internal/monitoring/)
+- Routes mounted at `/monitor/v1/` — enabled with `MONITORING_ENABLED=true`; disabled by default.
+- Prometheus metrics served on a **separate port** (`METRICS_ADDR=:9091`, `/metrics`); no auth middleware on that port.
+- Package structure: `internal/monitoring/cache/` (TTLCache), `internal/monitoring/logsink/` (Sink interface + KafkaSink/NoopSink), `internal/monitoring/handlers/` (Base + per-resource handlers), `internal/monitoring/routes.go`, `internal/monitoring/metrics_server.go`.
+- `handlers.Base` carries all shared deps; `cacheGet(w, key) bool` is the DRY cache-hit helper used by every handler method.
+- **KafkaSink shutdown pattern**: uses `stop chan struct{}` (closed by `Close()`) and `done chan struct{}` (closed by drainLoop). `Publish` selects on stop to avoid panic; `Close()` waits on `<-done` for full flush. Do NOT close the send channel directly.
+- **Pod log fetching**: must use `kubeClient.CoreV1().Pods().GetLogs()` (typed client), not `client.Client`; container always named `"job"` per jobbuilder convention.
+- **CRD field selectors on spec.* fields don't work server-side** — `ChainStats` lists all runs and filters in-process.
+- `inWindow()` for stats: active runs (no CompletionTime) included only if `StartTime.After(cutoff)` — prevents old stuck runs from inflating stats.
+- `?fieldSelector=` validated with `fieldSelectorRe` before use and before building the cache key (prevents cache-key injection).
+- RBAC: `config/rbac/api-role.yaml` AND `deployment/fusion-weave/templates/api-role.yaml` both updated with monitoring rules (batch/jobs, apps/deployments, events, pods, pods/log).
+- Helm: `api.monitoring.enabled=true`, `api.monitoring.metricsPort=9091`, `api.monitoring.cacheTTL`, `api.monitoring.maxLogLines`, `api.monitoring.kafka.brokers/topic`.
+- **Raw-YAML deploy**: enabling monitoring requires `kubectl apply -f config/rbac/api-role.yaml` explicitly — patching the Deployment env vars alone does NOT update the Role; missing rules cause 500s on `/monitor/v1/runs/{name}`.
+- **Port 9091 on raw-YAML**: the Service does not expose the metrics port unless installed via Helm with `api.monitoring.enabled=true`; use `kubectl port-forward pod/<api-pod-name> 8082:8082 9091:9091 -n fusion` (pod, not svc) when testing locally.
+- **zsh curl gotcha**: always single-quote URLs containing `?` — zsh expands `?` as a glob (`curl -s 'http://localhost:8082/monitor/v1/stats/runs?window=7d'`).

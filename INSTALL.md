@@ -247,6 +247,90 @@ The operator exposes an HTTP server on port `9090` for webhook-based firing. Cre
 
 ---
 
+## Enabling the Monitoring API
+
+The monitoring API is disabled by default. Enable it via Helm or by setting environment variables in the API server Deployment.
+
+### Helm (recommended)
+
+```bash
+helm upgrade fusion-weave deployment/fusion-weave/ \
+  --reuse-values \
+  --set api.monitoring.enabled=true \
+  --set api.monitoring.metricsPort=9091 \
+  --set api.monitoring.cacheTTL=30s \
+  --set api.monitoring.maxLogLines=100
+```
+
+With Kafka log streaming:
+
+```bash
+helm upgrade fusion-weave deployment/fusion-weave/ \
+  --reuse-values \
+  --set api.monitoring.enabled=true \
+  --set api.monitoring.kafka.brokers=kafka.fusion.svc.cluster.local:9092 \
+  --set api.monitoring.kafka.topic=weave-logs
+```
+
+### Raw-YAML (environment variables)
+
+Edit `config/manager/api-server.yaml` and add:
+
+```yaml
+env:
+  - name: MONITORING_ENABLED
+    value: "true"
+  - name: METRICS_ADDR
+    value: ":9091"
+  - name: MONITOR_CACHE_TTL
+    value: "30s"
+  - name: MONITOR_LOG_LINES
+    value: "100"
+  # Optional Kafka sink:
+  - name: KAFKA_ENABLED
+    value: "true"
+  - name: KAFKA_BROKERS
+    value: "kafka:9092"
+  - name: KAFKA_TOPIC
+    value: "weave-logs"
+```
+
+Then:
+```bash
+kubectl apply -f config/manager/api-server.yaml
+kubectl rollout restart deployment/fusion-weave-api -n fusion
+```
+
+### Verify
+
+```bash
+# Monitoring routes
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/monitor/v1/stats/runs
+
+# Prometheus metrics
+kubectl port-forward svc/fusion-weave-api 9091:9091 -n fusion &
+curl http://localhost:9091/metrics | grep weave_
+```
+
+### Monitoring API endpoints
+
+| Path | Description |
+|---|---|
+| `GET /monitor/v1/runs` | All WeaveRun summaries |
+| `GET /monitor/v1/runs/{name}` | Run detail with jobs and events |
+| `GET /monitor/v1/runs/{name}/jobs` | batch/v1 Jobs for a run |
+| `GET /monitor/v1/runs/{name}/jobs/{jobName}` | Single job |
+| `GET /monitor/v1/runs/{name}/steps/{step}/logs` | Pod log snapshot |
+| `GET /monitor/v1/runs/{name}/events` | Kubernetes events for a run |
+| `GET /monitor/v1/events` | All events (optional `?fieldSelector=`) |
+| `GET /monitor/v1/chains/{name}/deployments` | Deployments owned by a chain |
+| `GET /monitor/v1/stats/runs` | Aggregated run stats (`?window=1h\|24h\|7d`) |
+| `GET /monitor/v1/stats/chains/{name}` | Per-chain stats |
+
+All monitoring endpoints require `viewer` role or higher.
+
+---
+
 ## Upgrading
 
 ### Rebuild and redeploy (minikube)
@@ -341,4 +425,25 @@ kubectl describe weaverun <name> -n fusion
 kubectl logs deployment/fusion-weave-operator -n fusion | grep -i error
 # Common cause: operator lacks RBAC to create batch/v1 Jobs.
 # Fix: re-apply config/rbac/role.yaml
+```
+
+**Monitoring API returns 404 on `/monitor/v1/`**
+```bash
+# Check that MONITORING_ENABLED is set to "true" in the API server pod.
+kubectl get deployment fusion-weave-api -n fusion -o jsonpath='{.spec.template.spec.containers[0].env}' | jq .
+# Fix: helm upgrade with --set api.monitoring.enabled=true, then rollout restart.
+```
+
+**Prometheus port not reachable**
+```bash
+# Confirm METRICS_ADDR is set (default :9091) and the metrics containerPort is exposed.
+kubectl get svc fusion-weave-api -n fusion -o yaml | grep -A3 ports
+# The metrics port is only added to the Service when api.monitoring.enabled=true.
+```
+
+**Log snapshot returns empty lines**
+```bash
+# The container in the job pod must be named "job" (set by jobbuilder — do not override).
+# Check with: kubectl get pod <pod-name> -n fusion -o jsonpath='{.spec.containers[*].name}'
+# Also verify the API server RBAC includes pods/log: re-apply config/rbac/api-role.yaml
 ```
