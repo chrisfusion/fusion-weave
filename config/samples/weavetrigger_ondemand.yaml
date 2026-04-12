@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Sample: on-demand trigger — fire by setting the annotation fusion-platform.io/fire=true
+#
+# kubectl annotate fluxtrigger etl-ondemand fusion-platform.io/fire=true -n fusion
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: etl-ondemand
+  namespace: fusion
+spec:
+  chainRef:
+    name: etl-pipeline
+  type: OnDemand

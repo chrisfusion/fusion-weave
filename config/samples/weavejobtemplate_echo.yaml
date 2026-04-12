@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Sample: a simple echo job template
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: echo-hello
+  namespace: fusion
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args: ["echo hello from step $(STEP_NAME)"]
+  env:
+    - name: STEP_NAME
+      value: "default"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  retryPolicy:
+    maxRetries: 2
+    backoffSeconds: 5

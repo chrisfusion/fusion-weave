@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+apiVersion: v2
+name: fusion-weave
+description: Kubernetes operator for scheduling configurable job DAGs
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - operator
+  - job-scheduler
+  - dag
+home: https://github.com/chrisfusion/fusion-weave
+sources:
+  - https://github.com/chrisfusion/fusion-weave
+maintainers:
+  - name: chrisfusion

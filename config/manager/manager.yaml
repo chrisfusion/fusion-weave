@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fusion-weave-operator
+  namespace: fusion
+  labels:
+    app: fusion-weave-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fusion-weave-operator
+  template:
+    metadata:
+      labels:
+        app: fusion-weave-operator
+    spec:
+      serviceAccountName: fusion-weave-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: manager
+          image: fusion-weave-operator:latest
+          imagePullPolicy: Never
+          command: ["/manager"]
+          args:
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --webhook-bind-address=:9090
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: health
+              containerPort: 8081
+            - name: webhook
+              containerPort: 9090
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fusion-weave-webhook
+  namespace: fusion
+spec:
+  selector:
+    app: fusion-weave-operator
+  ports:
+    - name: webhook
+      port: 9090
+      targetPort: 9090

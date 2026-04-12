@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Sample WeaveChain: build step → deploy step → smoke-test step.
+#
+# Shape:
+#   build  ──► deploy  ──► smoke-test
+#
+# - build: a Job that simulates an artifact build
+# - deploy: a Deploy-kind step that creates/rolling-updates nginx-server Deployment
+# - smoke-test: a Job that runs after the Deployment is Available
+#
+# Trigger manually:
+#   kubectl annotate weavetrigger deploy-demo-trigger fusion-platform.io/fire=true -n fusion
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: build-step
+  namespace: fusion
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "Building artifact..."
+      sleep 2
+      echo "Build complete."
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: smoke-test
+  namespace: fusion
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "Running smoke test against deployed service..."
+      # In a real scenario: wget -qO- http://nginx-server-deploy/healthz
+      echo "Smoke test passed."
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: deploy-demo
+  namespace: fusion
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: build
+      stepKind: Job
+      jobTemplateRef:
+        name: build-step
+      runOnSuccess: true
+
+    - name: deploy
+      stepKind: Deploy
+      serviceTemplateRef:
+        name: nginx-server
+      dependsOn: [build]
+      runOnSuccess: true
+
+    - name: smoke-test
+      stepKind: Job
+      jobTemplateRef:
+        name: smoke-test
+      dependsOn: [deploy]
+      runOnSuccess: true
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: deploy-demo-trigger
+  namespace: fusion
+spec:
+  chainRef:
+    name: deploy-demo
+  type: OnDemand

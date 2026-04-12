@@ -1,0 +1,14 @@
+{{- if and .Values.api.enabled .Values.api.auth.saAuthEnabled }}
+# SPDX-License-Identifier: GPL-3.0-or-later
+# TokenReview is cluster-scoped and cannot be granted via a namespaced Role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-api-tokenreview
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+{{- end }}

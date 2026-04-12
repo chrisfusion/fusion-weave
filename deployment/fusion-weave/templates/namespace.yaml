@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+{{- if .Values.namespaceCreate }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+{{- end }}

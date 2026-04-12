@@ -1,0 +1,388 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+  name: weavechains.weave.fusion-platform.io
+spec:
+  group: weave.fusion-platform.io
+  names:
+    kind: WeaveChain
+    listKind: WeaveChainList
+    plural: weavechains
+    shortNames:
+    - fc
+    singular: weavechain
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.failurePolicy
+      name: FailurePolicy
+      type: string
+    - jsonPath: .spec.concurrencyPolicy
+      name: Concurrency
+      type: string
+    - jsonPath: .status.valid
+      name: Valid
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: WeaveChain defines a DAG of WeaveJobTemplate references with
+          dependency rules.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: WeaveChainSpec defines the DAG topology and execution policy.
+            properties:
+              concurrencyPolicy:
+                default: Wait
+                description: |-
+                  ConcurrencyPolicy controls behaviour when a new run is triggered
+                  while a previous run is still active.
+                enum:
+                - Wait
+                - Forbid
+                type: string
+              failurePolicy:
+                default: StopAll
+                description: FailurePolicy controls chain-wide failure behaviour.
+                enum:
+                - StopAll
+                - ContinueOthers
+                - RetryFailed
+                type: string
+              sharedStorage:
+                description: |-
+                  SharedStorage, when set, provisions a ReadWriteMany PVC for each run of
+                  this chain and mounts it into every job pod at /weave-shared.
+                properties:
+                  size:
+                    description: Size is the PVC storage request (e.g. "500Mi", "2Gi").
+                    minLength: 1
+                    type: string
+                  storageClassName:
+                    description: |-
+                      StorageClassName is the name of the StorageClass to use.
+                      If empty, the cluster default StorageClass is used.
+                    type: string
+                required:
+                - size
+                type: object
+              steps:
+                description: Steps is the list of DAG nodes. At least one step is
+                  required.
+                items:
+                  description: WeaveChainStep defines one node in the DAG.
+                  properties:
+                    consumesOutputFrom:
+                      description: |-
+                        ConsumesOutputFrom lists the names of steps in this chain whose captured
+                        JSON output should be merged and made available to this step at
+                        /weave-input/input.json inside the container.
+                        Every referenced step must have ProducesOutput: true and must be a direct
+                        or transitive dependency of this step.
+                      items:
+                        type: string
+                      type: array
+                    dependsOn:
+                      description: |-
+                        DependsOn lists the names of steps that must reach a terminal state
+                        before this step is evaluated. Empty means this is a root step.
+                      items:
+                        type: string
+                      type: array
+                    envOverrides:
+                      description: |-
+                        EnvOverrides are extra environment variables injected into this step,
+                        on top of those defined in the referenced WeaveJobTemplate.
+                      items:
+                        description: EnvVar represents an environment variable present
+                          in a Container.
+                        properties:
+                          name:
+                            description: Name of the environment variable. Must be
+                              a C_IDENTIFIER.
+                            type: string
+                          value:
+                            description: |-
+                              Variable references $(VAR_NAME) are expanded
+                              using the previously defined environment variables in the container and
+                              any service environment variables. If a variable cannot be resolved,
+                              the reference in the input string will be unchanged. Double $$ are reduced
+                              to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e.
+                              "$$(VAR_NAME)" will produce the string literal "$(VAR_NAME)".
+                              Escaped references will never be expanded, regardless of whether the variable
+                              exists or not.
+                              Defaults to "".
+                            type: string
+                          valueFrom:
+                            description: Source for the environment variable's value.
+                              Cannot be used if value is not empty.
+                            properties:
+                              configMapKeyRef:
+                                description: Selects a key of a ConfigMap.
+                                properties:
+                                  key:
+                                    description: The key to select.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the ConfigMap or
+                                      its key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              fieldRef:
+                                description: |-
+                                  Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
+                                  spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.
+                                properties:
+                                  apiVersion:
+                                    description: Version of the schema the FieldPath
+                                      is written in terms of, defaults to "v1".
+                                    type: string
+                                  fieldPath:
+                                    description: Path of the field to select in the
+                                      specified API version.
+                                    type: string
+                                required:
+                                - fieldPath
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              resourceFieldRef:
+                                description: |-
+                                  Selects a resource of the container: only resources limits and requests
+                                  (limits.cpu, limits.memory, limits.ephemeral-storage, requests.cpu, requests.memory and requests.ephemeral-storage) are currently supported.
+                                properties:
+                                  containerName:
+                                    description: 'Container name: required for volumes,
+                                      optional for env vars'
+                                    type: string
+                                  divisor:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    description: Specifies the output format of the
+                                      exposed resources, defaults to "1"
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                  resource:
+                                    description: 'Required: resource to select'
+                                    type: string
+                                required:
+                                - resource
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              secretKeyRef:
+                                description: Selects a key of a secret in the pod's
+                                  namespace
+                                properties:
+                                  key:
+                                    description: The key of the secret to select from.  Must
+                                      be a valid secret key.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the Secret or its
+                                      key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                            type: object
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    jobTemplateRef:
+                      description: |-
+                        JobTemplateRef references the WeaveJobTemplate for Job-kind steps.
+                        Required when StepKind is Job (or omitted); ignored for Deploy steps.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    name:
+                      description: Name uniquely identifies this step within the chain.
+                      minLength: 1
+                      type: string
+                    producesOutput:
+                      description: |-
+                        ProducesOutput indicates that this step writes a JSON object to stdout.
+                        The operator captures the output and stores it in the run's output ConfigMap
+                        so that downstream steps can consume it via ConsumesOutputFrom.
+                      type: boolean
+                    runOnFailure:
+                      default: false
+                      description: |-
+                        RunOnFailure allows this step to start when at least one dependency failed.
+                        Enables failure-branch patterns. Defaults to false.
+                      type: boolean
+                    runOnSuccess:
+                      default: true
+                      description: |-
+                        RunOnSuccess allows this step to start when all dependencies succeeded.
+                        Defaults to true.
+                      type: boolean
+                    serviceTemplateRef:
+                      description: |-
+                        ServiceTemplateRef references the WeaveServiceTemplate for Deploy-kind steps.
+                        Required when StepKind is Deploy; ignored for Job steps.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    stepKind:
+                      default: Job
+                      description: |-
+                        StepKind selects the step type: Job (default) or Deploy.
+                        Job steps run a batch/v1 Job; Deploy steps create/update a long-running Deployment.
+                      enum:
+                      - Job
+                      - Deploy
+                      type: string
+                  required:
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+            required:
+            - steps
+            type: object
+          status:
+            description: WeaveChainStatus reflects validation results for the chain.
+            properties:
+              activeDeployments:
+                additionalProperties:
+                  description: WeaveActiveDeploymentStatus tracks the health of a
+                    Deployment created by a deploy step.
+                  properties:
+                    currentRevision:
+                      description: CurrentRevision is the Deployment revision currently
+                        running.
+                      type: string
+                    deploymentName:
+                      description: DeploymentName is the name of the managed Deployment.
+                      type: string
+                    health:
+                      description: Health is the current health phase of the Deployment.
+                      enum:
+                      - Healthy
+                      - Unhealthy
+                      - RollingBack
+                      - RolledBack
+                      - Unknown
+                      type: string
+                    lastRollbackRevision:
+                      description: LastRollbackRevision is the revision rolled back
+                        to (set after a rollback).
+                      type: string
+                    lastRollbackTime:
+                      description: LastRollbackTime is when the most recent rollback
+                        was triggered.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is a human-readable status detail.
+                      type: string
+                    stepName:
+                      description: StepName is the chain step that owns this Deployment.
+                      type: string
+                    unhealthyDurationSeconds:
+                      description: |-
+                        UnhealthyDurationSeconds is the unhealthyDuration from the template at
+                        registration time, cached here to avoid a lookup in the health loop.
+                      format: int64
+                      type: integer
+                    unhealthySince:
+                      description: UnhealthySince is when the Deployment first entered
+                        an unhealthy state.
+                      format: date-time
+                      type: string
+                  required:
+                  - deploymentName
+                  - health
+                  - stepName
+                  type: object
+                description: |-
+                  ActiveDeployments maps stable Deployment names (<chainName>-<stepName>) to
+                  their ongoing health status. The operator monitors these after a run completes
+                  and triggers automatic rollback when a Deployment remains unhealthy.
+                type: object
+              observedGeneration:
+                description: ObservedGeneration is the generation last processed by
+                  the controller.
+                format: int64
+                type: integer
+              valid:
+                description: Valid is true when all referenced templates exist and
+                  the DAG is acyclic.
+                type: boolean
+              validationMessage:
+                description: ValidationMessage holds a human-readable reason when
+                  Valid is false.
+                type: string
+            required:
+            - valid
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

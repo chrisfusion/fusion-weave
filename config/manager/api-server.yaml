@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fusion-weave-api
+  namespace: fusion
+  labels:
+    app.kubernetes.io/name: fusion-weave-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fusion-weave-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fusion-weave-api
+    spec:
+      serviceAccountName: fusion-weave-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: api-server
+          image: fusion-weave-operator:latest
+          imagePullPolicy: Never
+          command: ["/api-server"]
+          env:
+            - name: NAMESPACE
+              value: fusion
+            - name: ALLOW_UNAUTHENTICATED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8082
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fusion-weave-api
+  namespace: fusion
+  labels:
+    app.kubernetes.io/name: fusion-weave-api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: fusion-weave-api
+  ports:
+    - name: http
+      port: 8082
+      targetPort: 8082

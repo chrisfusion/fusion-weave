@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Sample: webhook trigger — fire via HTTP POST
+#
+# curl -X POST http://<cluster-ip>:9090/trigger/etl \
+#      -H "Authorization: Bearer $(kubectl get secret etl-webhook-token -n fusion -o jsonpath='{.data.token}' | base64 -d)" \
+#      -H "Content-Type: application/json" \
+#      -d '[{"name":"ENV","value":"staging"}]'
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: etl-webhook
+  namespace: fusion
+spec:
+  chainRef:
+    name: etl-pipeline
+  type: Webhook
+  webhook:
+    path: /trigger/etl
+    secretRef:
+      name: etl-webhook-token
+---
+# Create the bearer token secret:
+# kubectl create secret generic etl-webhook-token -n fusion --from-literal=token=my-secret-token
+apiVersion: v1
+kind: Secret
+metadata:
+  name: etl-webhook-token
+  namespace: fusion
+stringData:
+  token: "change-me"

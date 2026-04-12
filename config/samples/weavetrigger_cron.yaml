@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Sample: cron trigger — fires every 5 minutes
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: etl-cron
+  namespace: fusion
+spec:
+  chainRef:
+    name: etl-pipeline
+  type: Cron
+  schedule: "0 */5 * * * *"   # every 5 minutes (with seconds field)
+  parameterOverrides:
+    - name: RUN_ENV
+      value: production

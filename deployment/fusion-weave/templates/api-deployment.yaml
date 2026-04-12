@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+{{- if .Values.api.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "fusion-weave.api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fusion-weave.api.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.api.serviceAccount.name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: api-server
+          image: {{ include "fusion-weave.api.image" . }}
+          imagePullPolicy: {{ default .Values.image.pullPolicy .Values.api.image.pullPolicy }}
+          command: ["/api-server"]
+          env:
+            - name: NAMESPACE
+              value: {{ .Values.namespace | quote }}
+            - name: AUTH_APIKEY
+              value: {{ .Values.api.auth.apiKeyEnabled | toString | quote }}
+            - name: AUTH_OIDC
+              value: {{ .Values.api.auth.oidcEnabled | toString | quote }}
+            {{- if .Values.api.auth.oidcIssuerURL }}
+            - name: OIDC_ISSUER_URL
+              value: {{ .Values.api.auth.oidcIssuerURL | quote }}
+            {{- end }}
+            {{- if .Values.api.auth.oidcClientID }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.api.auth.oidcClientID | quote }}
+            {{- end }}
+            - name: OIDC_ROLE_CLAIM
+              value: {{ .Values.api.auth.oidcRoleClaim | quote }}
+            - name: AUTH_SA
+              value: {{ .Values.api.auth.saAuthEnabled | toString | quote }}
+            - name: ALLOW_UNAUTHENTICATED
+              value: {{ .Values.api.auth.allowUnauthenticated | toString | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.service.port }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.api.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.api.service.port }}
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+{{- end }}

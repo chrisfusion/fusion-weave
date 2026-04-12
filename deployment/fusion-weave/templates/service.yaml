@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+{{- if .Values.webhookService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-webhook
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.webhookService.type }}
+  selector:
+    {{- include "fusion-weave.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: webhook
+      port: {{ .Values.webhookService.port }}
+      targetPort: {{ .Values.ports.webhook }}
+{{- end }}

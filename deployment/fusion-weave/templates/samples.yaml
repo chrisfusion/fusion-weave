@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Sample resources demonstrating the shared-storage feature.
+# Enabled when samples.enabled=true.
+#
+# Chain shape:
+#   writer-a --|
+#              +--> reader   (reads both files from /weave-shared)
+#   writer-b --|
+#
+# writer-a and writer-b run in parallel, each writing a file to the shared PVC.
+# reader depends on both and reads them — proving shared storage persists across steps.
+{{- if .Values.samples.enabled }}
+---
+# WeaveJobTemplate: writes a single line to /weave-shared/<FILE_NAME>
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: shared-writer
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "${DATA}" > /weave-shared/${FILE_NAME}
+      echo "wrote /weave-shared/${FILE_NAME}"
+  env:
+    - name: DATA
+      value: "default-data"
+    - name: FILE_NAME
+      value: "data.txt"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+---
+# WeaveJobTemplate: reads and prints all files written by the writer steps
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: shared-reader
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "=== contents of /weave-shared ==="
+      ls /weave-shared/
+      echo "--- writer-a.txt ---"
+      cat /weave-shared/writer-a.txt
+      echo "--- writer-b.txt ---"
+      cat /weave-shared/writer-b.txt
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+---
+# WeaveChain: two parallel writers feeding a single reader, with shared PVC
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: shared-storage-demo
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  sharedStorage:
+    size: {{ .Values.samples.sharedStorage.size | quote }}
+    {{- if .Values.samples.sharedStorage.storageClassName }}
+    storageClassName: {{ .Values.samples.sharedStorage.storageClassName | quote }}
+    {{- end }}
+  steps:
+    - name: writer-a
+      jobTemplateRef:
+        name: shared-writer
+      runOnSuccess: true
+      envOverrides:
+        - name: FILE_NAME
+          value: writer-a.txt
+        - name: DATA
+          value: "hello from writer-a"
+
+    - name: writer-b
+      jobTemplateRef:
+        name: shared-writer
+      runOnSuccess: true
+      envOverrides:
+        - name: FILE_NAME
+          value: writer-b.txt
+        - name: DATA
+          value: "hello from writer-b"
+
+    - name: reader
+      jobTemplateRef:
+        name: shared-reader
+      dependsOn: [writer-a, writer-b]
+      runOnSuccess: true
+---
+# WeaveTrigger: fire on demand via annotation
+# kubectl annotate weavetrigger shared-storage-demo-trigger fusion-platform.io/fire=true -n {{ .Values.namespace }}
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: shared-storage-demo-trigger
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: shared-storage-demo
+  type: OnDemand
+{{- end }}

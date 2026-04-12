@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Namespace the operator manages.
+# All WeaveJobTemplate, WeaveChain, WeaveTrigger, and WeaveRun resources live here.
+namespace: fusion
+
+# Set to true to have the chart create the namespace.
+# Set to false if the namespace already exists (avoids Helm ownership conflicts).
+namespaceCreate: true
+
+image:
+  repository: ghcr.io/chrisfusion/fusion-weave-operator
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Number of operator replicas. Set >1 only together with leaderElection.enabled=true.
+replicaCount: 1
+
+leaderElection:
+  enabled: false
+
+serviceAccount:
+  name: fusion-weave-operator
+
+# Resource requests and limits for the operator pod.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 128Mi
+
+# Ports used by the operator.
+ports:
+  metrics: 8080
+  health: 8081
+  webhook: 9090
+
+# Webhook trigger HTTP service configuration.
+webhookService:
+  enabled: true
+  type: ClusterIP
+  port: 9090
+
+# REST API server configuration.
+api:
+  # Set to false to skip deploying the API server entirely.
+  enabled: true
+
+  # Image — defaults to the same image as the operator (both binaries are in the same image).
+  # Override repository/tag here only when deploying from a separate image.
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: ""
+
+  serviceAccount:
+    name: fusion-weave-api
+
+  replicaCount: 1
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
+  service:
+    type: ClusterIP
+    port: 8082
+
+  auth:
+    # Enable API key authentication (Secrets labelled fusion-platform.io/api-key=true).
+    apiKeyEnabled: false
+    # Enable OIDC JWT authentication.
+    oidcEnabled: false
+    oidcIssuerURL: ""
+    oidcClientID: ""
+    oidcRoleClaim: "fusion-weave-role"
+    # Enable Kubernetes ServiceAccount token authentication via TokenReview.
+    # Requires the api-clusterrole template (tokenreviews permission).
+    saAuthEnabled: false
+    # Skip all auth checks — cluster-internal mode only. Grants full admin. Never use in production.
+    allowUnauthenticated: false
+
+# Sample resources deployed alongside the operator.
+# Disabled by default — enable to get a working shared-storage demo chain.
+# Deploy with: helm upgrade --install ... --set samples.enabled=true
+samples:
+  enabled: false
+
+  # Shared storage settings used by the demo chain.
+  sharedStorage:
+    # size is the PVC capacity requested for the demo run.
+    size: "500Mi"
+    # storageClassName is the StorageClass to request.
+    # Leave empty to use the cluster default.
+    # NOTE: the StorageClass must support ReadWriteMany (e.g. NFS, CephFS).
+    # The default "standard" class on minikube does NOT support RWX.
+    storageClassName: ""

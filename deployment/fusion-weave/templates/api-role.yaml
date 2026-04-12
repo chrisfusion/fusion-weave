@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+{{- if .Values.api.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.api.serviceAccount.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["weave.fusion-platform.io"]
+    resources:
+      - weavejobtemplates
+      - weavejobtemplates/status
+      - weaveservicetemplates
+      - weaveservicetemplates/status
+      - weavechains
+      - weavechains/status
+      - weavetriggers
+      - weavetriggers/status
+      - weaveruns
+      - weaveruns/status
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- if .Values.api.auth.apiKeyEnabled }}
+  # Secrets listed to resolve API key credentials (label: fusion-platform.io/api-key=true).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list"]
+  {{- end }}
+{{- end }}

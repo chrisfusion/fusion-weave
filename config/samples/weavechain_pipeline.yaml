@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Sample: a 3-step pipeline with fan-out, fan-in, and a failure branch
+#
+# DAG shape:
+#   extract --> transform-a --|
+#                              +--> load
+#   extract --> transform-b --|
+#
+# Plus a cleanup step that runs only if any step fails.
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: etl-pipeline
+  namespace: fusion
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: extract
+      jobTemplateRef:
+        name: echo-hello
+      envOverrides:
+        - name: STEP_NAME
+          value: extract
+
+    - name: transform-a
+      jobTemplateRef:
+        name: echo-hello
+      dependsOn: [extract]
+      runOnSuccess: true
+      runOnFailure: false
+      envOverrides:
+        - name: STEP_NAME
+          value: transform-a
+
+    - name: transform-b
+      jobTemplateRef:
+        name: echo-hello
+      dependsOn: [extract]
+      runOnSuccess: true
+      runOnFailure: false
+      envOverrides:
+        - name: STEP_NAME
+          value: transform-b
+
+    - name: load
+      jobTemplateRef:
+        name: echo-hello
+      dependsOn: [transform-a, transform-b]
+      runOnSuccess: true
+      runOnFailure: false
+      envOverrides:
+        - name: STEP_NAME
+          value: load
+
+    - name: cleanup-on-failure
+      jobTemplateRef:
+        name: echo-hello
+      dependsOn: [extract]
+      runOnSuccess: false
+      runOnFailure: true
+      envOverrides:
+        - name: STEP_NAME
+          value: cleanup-on-failure
