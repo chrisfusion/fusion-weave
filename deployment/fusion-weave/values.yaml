@@ -82,7 +82,7 @@ api:
     oidcRoleClaim: "fusion-weave-role"
     # Enable Kubernetes ServiceAccount token authentication via TokenReview.
     # Requires the api-clusterrole template (tokenreviews permission).
-    saAuthEnabled: false
+    saAuthEnabled: true
     # Skip all auth checks — cluster-internal mode only. Grants full admin. Never use in production.
     allowUnauthenticated: false
 
