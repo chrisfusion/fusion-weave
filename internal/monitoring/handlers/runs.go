@@ -34,11 +34,45 @@ type RunDetail struct {
 }
 
 // RunsHandler serves GET /monitor/v1/runs and GET /monitor/v1/runs/{name}.
-type RunsHandler struct{ Base }
+// seenRuns tracks terminal runs whose duration has already been observed in the
+// runDurationSeconds histogram, preventing double-counting across polling cycles.
+type RunsHandler struct {
+	Base
+	seenRuns map[string]struct{}
+}
 
-func NewRunsHandler(b Base) *RunsHandler { return &RunsHandler{b} }
+func NewRunsHandler(b Base) *RunsHandler {
+	return &RunsHandler{Base: b, seenRuns: make(map[string]struct{})}
+}
+
+// allRunPhases is the complete ordered set of WeaveRun phases.
+var allRunPhases = []weavev1alpha1.WeaveRunPhase{
+	weavev1alpha1.RunPhasePending,
+	weavev1alpha1.RunPhaseRunning,
+	weavev1alpha1.RunPhaseSucceeded,
+	weavev1alpha1.RunPhaseFailed,
+	weavev1alpha1.RunPhaseStopped,
+}
+
+// allStepPhases is the complete ordered set of WeaveRun step phases.
+var allStepPhases = []weavev1alpha1.WeaveStepPhase{
+	weavev1alpha1.StepPhasePending,
+	weavev1alpha1.StepPhaseRunning,
+	weavev1alpha1.StepPhaseSucceeded,
+	weavev1alpha1.StepPhaseFailed,
+	weavev1alpha1.StepPhaseSkipped,
+	weavev1alpha1.StepPhaseRetrying,
+}
+
+// terminalRunPhases is the set of phases where a run no longer progresses.
+var terminalRunPhases = map[weavev1alpha1.WeaveRunPhase]bool{
+	weavev1alpha1.RunPhaseSucceeded: true,
+	weavev1alpha1.RunPhaseFailed:    true,
+	weavev1alpha1.RunPhaseStopped:   true,
+}
 
 // List handles GET /monitor/v1/runs — returns a summary slice.
+// As a side effect it refreshes all Tier-1 and Tier-2 Prometheus metrics.
 func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	const key = "runs:list"
 	if h.cacheGet(w, key) {
@@ -52,18 +86,49 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	summaries := make([]RunSummary, 0, len(list.Items))
-	phaseCounts := map[string]float64{}
+
+	// chain -> phase -> count for weave_runs_by_phase
+	runPhaseCounts := map[string]map[string]float64{}
+	// chain -> step-phase -> count for weave_step_phase_total
+	stepPhaseCounts := map[string]map[string]float64{}
+	// chain -> total retry count for weave_step_retry_count
+	retryTotals := map[string]float64{}
+
 	for i := range list.Items {
 		run := &list.Items[i]
+		chain := run.Spec.ChainRef.Name
+
+		if runPhaseCounts[chain] == nil {
+			runPhaseCounts[chain] = map[string]float64{}
+		}
+		if stepPhaseCounts[chain] == nil {
+			stepPhaseCounts[chain] = map[string]float64{}
+		}
+		runPhaseCounts[chain][string(run.Status.Phase)]++
+
+		// Observe run duration exactly once per terminal run.
+		if terminalRunPhases[run.Status.Phase] {
+			if _, seen := h.seenRuns[run.Name]; !seen {
+				if run.Status.StartTime != nil && run.Status.CompletionTime != nil {
+					d := run.Status.CompletionTime.Time.Sub(run.Status.StartTime.Time).Seconds()
+					runDurationSeconds.WithLabelValues(chain, string(run.Status.Phase)).Observe(d)
+				}
+				h.seenRuns[run.Name] = struct{}{}
+			}
+		}
+
 		failed := 0
 		for _, s := range run.Status.Steps {
 			if s.Phase == weavev1alpha1.StepPhaseFailed {
 				failed++
 			}
+			stepPhaseCounts[chain][string(s.Phase)]++
+			retryTotals[chain] += float64(s.RetryCount)
 		}
+
 		summaries = append(summaries, RunSummary{
 			Name:           run.Name,
-			Chain:          run.Spec.ChainRef.Name,
+			Chain:          chain,
 			Phase:          run.Status.Phase,
 			StartTime:      run.Status.StartTime,
 			CompletionTime: run.Status.CompletionTime,
@@ -71,17 +136,32 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 			FailedSteps:    failed,
 			Message:        run.Status.Message,
 		})
-		phaseCounts[string(run.Status.Phase)]++
 	}
 
-	// Update Prometheus gauge with fresh counts.
-	for _, phase := range []weavev1alpha1.WeaveRunPhase{
-		weavev1alpha1.RunPhasePending, weavev1alpha1.RunPhaseRunning,
-		weavev1alpha1.RunPhaseSucceeded, weavev1alpha1.RunPhaseFailed,
-		weavev1alpha1.RunPhaseStopped,
-	} {
-		runPhaseGauge.WithLabelValues(string(phase)).Set(phaseCounts[string(phase)])
+	// Refresh weave_runs_by_phase{phase, chain}.
+	runPhaseGauge.Reset()
+	for chain, phases := range runPhaseCounts {
+		for _, phase := range allRunPhases {
+			runPhaseGauge.WithLabelValues(string(phase), chain).Set(phases[string(phase)])
+		}
 	}
+
+	// Refresh weave_step_phase_total{chain, phase}.
+	stepPhaseTotal.Reset()
+	for chain, phases := range stepPhaseCounts {
+		for _, phase := range allStepPhases {
+			stepPhaseTotal.WithLabelValues(chain, string(phase)).Set(phases[string(phase)])
+		}
+	}
+
+	// Refresh weave_step_retry_count{chain}.
+	stepRetryCount.Reset()
+	for chain, count := range retryTotals {
+		stepRetryCount.WithLabelValues(chain).Set(count)
+	}
+
+	// Refresh Tier-2 chain-level metrics (valid, step count, deployment health).
+	refreshChainMetrics(r.Context(), h.Client, h.Namespace)
 
 	h.Cache.Set(key, summaries)
 	writeJSON(w, http.StatusOK, summaries)

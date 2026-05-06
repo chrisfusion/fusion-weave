@@ -25,6 +25,8 @@ func RegisterRoutes(r chi.Router, cfg Config) {
 		cfg.MaxLogLines,
 	)
 
+	r.Use(handlers.MonitoringMiddleware)
+
 	runs := handlers.NewRunsHandler(b)
 	jobs := handlers.NewJobsHandler(b)
 	logs := handlers.NewLogsHandler(b)
