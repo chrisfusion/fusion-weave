@@ -188,11 +188,13 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Sync running steps from their batch Jobs or Deployments.
 	requeueAfter := time.Duration(0)
 	for name, ss := range stepMap {
-		if ss.Phase != weavev1alpha1.StepPhaseRunning && ss.Phase != weavev1alpha1.StepPhaseRetrying {
+		if ss.Phase != weavev1alpha1.StepPhaseRunning &&
+			ss.Phase != weavev1alpha1.StepPhaseRetrying &&
+			ss.Phase != weavev1alpha1.StepPhaseDeployed {
 			continue
 		}
 
-		// Deploy-kind step: check Deployment availability.
+		// Deploy-kind step: handle both the initial availability wait and ongoing health polling.
 		if ss.DeploymentRef != nil {
 			var deploy appsv1.Deployment
 			deployErr := r.Get(ctx, types.NamespacedName{
@@ -202,19 +204,35 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				if !errors.IsNotFound(deployErr) {
 					return ctrl.Result{}, deployErr
 				}
-				// Deployment disappeared — requeue.
-				if requeueAfter == 0 || 5*time.Second < requeueAfter {
-					requeueAfter = 5 * time.Second
+				if ss.Phase == weavev1alpha1.StepPhaseDeployed {
+					// Service was running but its Deployment was deleted externally.
+					now := metav1.Now()
+					ss.Phase = weavev1alpha1.StepPhaseFailed
+					ss.CompletionTime = &now
+					ss.Message = "deployment was deleted externally"
+					stepStates[name] = dag.StepPhaseFailed
+					stepMap[name] = ss
+				} else {
+					// Deployment hasn't appeared yet — requeue.
+					if requeueAfter == 0 || 5*time.Second < requeueAfter {
+						requeueAfter = 5 * time.Second
+					}
 				}
 				continue
 			}
+			if ss.Phase == weavev1alpha1.StepPhaseDeployed {
+				// Service is up — keep the run alive with a periodic health poll.
+				if requeueAfter == 0 || 30*time.Second < requeueAfter {
+					requeueAfter = 30 * time.Second
+				}
+				continue
+			}
+			// Phase is Running — wait for the Deployment to become Available.
 			if isDeploymentAvailable(&deploy) {
-				now := metav1.Now()
-				ss.Phase = weavev1alpha1.StepPhaseSucceeded
-				ss.CompletionTime = &now
-				stepStates[name] = dag.StepPhaseSucceeded
+				ss.Phase = weavev1alpha1.StepPhaseDeployed
+				stepStates[name] = dag.StepPhaseDeployed
 				stepMap[name] = ss
-				// Register the deployment for ongoing health monitoring on the chain.
+				// Register for ongoing health monitoring on the chain.
 				stepSpec := findStepSpec(chain.Spec.Steps, name)
 				if stepSpec != nil && stepSpec.ServiceTemplateRef != nil {
 					svcTmpl := serviceTemplates[stepSpec.ServiceTemplateRef.Name]
@@ -223,6 +241,9 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 							logger.Error(regErr, "register active deployment", "step", name)
 						}
 					}
+				}
+				if requeueAfter == 0 || 30*time.Second < requeueAfter {
+					requeueAfter = 30 * time.Second
 				}
 			} else {
 				// Not available yet — requeue to poll.
@@ -842,7 +863,7 @@ func (r *WeaveRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			for _, ss := range run.Status.Steps {
 				if ss.DeploymentRef != nil && ss.DeploymentRef.Name == deployName &&
-					ss.Phase == weavev1alpha1.StepPhaseRunning {
+					(ss.Phase == weavev1alpha1.StepPhaseRunning || ss.Phase == weavev1alpha1.StepPhaseDeployed) {
 					reqs = append(reqs, reconcile.Request{
 						NamespacedName: types.NamespacedName{
 							Namespace: ns,

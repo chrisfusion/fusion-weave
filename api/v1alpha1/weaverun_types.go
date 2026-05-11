@@ -26,23 +26,27 @@ const (
 )
 
 // WeaveStepPhase is the lifecycle phase of a single DAG step.
-// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Skipped;Retrying
+// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Skipped;Retrying;Deployed
 type WeaveStepPhase string
 
 const (
 	// StepPhasePending means the step is waiting for its dependencies.
 	StepPhasePending WeaveStepPhase = "Pending"
-	// StepPhaseRunning means the batch/v1 Job has been submitted.
+	// StepPhaseRunning means the batch/v1 Job has been submitted or the Deployment is being created.
 	StepPhaseRunning WeaveStepPhase = "Running"
 	// StepPhaseSucceeded means the batch/v1 Job completed successfully.
 	StepPhaseSucceeded WeaveStepPhase = "Succeeded"
-	// StepPhaseFailed means the batch/v1 Job failed and retries are exhausted.
+	// StepPhaseFailed means the batch/v1 Job failed and retries are exhausted, or the Deployment was removed.
 	StepPhaseFailed WeaveStepPhase = "Failed"
 	// StepPhaseSkipped means the step was not started because its condition was
 	// not met or the chain was stopped.
 	StepPhaseSkipped WeaveStepPhase = "Skipped"
 	// StepPhaseRetrying means the step is waiting for its backoff period.
 	StepPhaseRetrying WeaveStepPhase = "Retrying"
+	// StepPhaseDeployed means the Deployment became Available and is actively running.
+	// This phase is non-terminal: it satisfies dependency checks for downstream steps
+	// but keeps the WeaveRun in Running phase for as long as the service is up.
+	StepPhaseDeployed WeaveStepPhase = "Deployed"
 )
 
 // WeaveRunStepStatus tracks the execution state of one DAG step.

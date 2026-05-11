@@ -27,6 +27,9 @@ const (
 	StepPhaseFailed    StepPhase = "Failed"
 	StepPhaseSkipped   StepPhase = "Skipped"
 	StepPhaseRetrying  StepPhase = "Retrying"
+	// StepPhaseDeployed mirrors api/v1alpha1 — deployment is Available and actively running.
+	// Satisfies dependency checks but does NOT allow RunComplete.
+	StepPhaseDeployed StepPhase = "Deployed"
 )
 
 // FailurePolicy mirrors the API type.
@@ -67,7 +70,9 @@ func Advance(
 		current := states[node.Name]
 
 		switch current {
-		case StepPhaseSucceeded, StepPhaseFailed, StepPhaseSkipped:
+		case StepPhaseSucceeded, StepPhaseFailed, StepPhaseSkipped, StepPhaseDeployed:
+			// Deployed satisfies dep checks so downstream steps can start once
+			// the service is up, but it does not count toward RunComplete below.
 			decisions[node.Name] = DecisionTerminal
 			continue
 		case StepPhaseRunning, StepPhaseRetrying:
@@ -103,6 +108,15 @@ func Advance(
 			break
 		}
 	}
+	// A run with at least one Deployed step is never complete — the service is still running.
+	if complete {
+		for _, phase := range states {
+			if phase == StepPhaseDeployed {
+				complete = false
+				break
+			}
+		}
+	}
 
 	succeeded := false
 	if complete {
@@ -117,11 +131,12 @@ func Advance(
 }
 
 // allDepsTerminal returns true when every named dependency has a terminal phase.
+// Deployed counts as terminal so downstream steps start once the service is available.
 func allDepsTerminal(deps []string, states map[string]StepPhase) bool {
 	for _, dep := range deps {
 		switch states[dep] {
-		case StepPhaseSucceeded, StepPhaseFailed, StepPhaseSkipped:
-			// terminal
+		case StepPhaseSucceeded, StepPhaseFailed, StepPhaseSkipped, StepPhaseDeployed:
+			// terminal for dependency purposes
 		default:
 			return false
 		}

@@ -1,5 +1,11 @@
 # fusion-weave
 
+## Changelog
+Every bugfix and new feature must be recorded in `CHANGELOG.md` (Keep a Changelog format).
+- Add entries under `## [Unreleased]` as you work; bump a version heading when releasing.
+- Sections: `### Added`, `### Changed`, `### Fixed`, `### Removed`.
+- One line per change — be specific enough that a reader understands scope without reading the diff.
+
 ## Project
 Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, WeaveServiceTemplate, WeaveChain, WeaveTrigger, WeaveRun.
 
@@ -30,14 +36,16 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - Cron/webhook callbacks run outside the reconcile loop — use a `source.Channel` + `WatchesRawSource` to wake the reconciler, not just `storePendingFire`.
 - Map iteration in Go is non-deterministic — sort step names before writing `run.Status.Steps` to avoid spurious status diffs.
 - Both `config/rbac/role.yaml` AND `deployment/fusion-weave/templates/role.yaml` are hand-maintained — `make generate` does NOT update either; edit both manually when CRD resource names or API group change.
+- Terminal runs (Succeeded/Failed/Stopped) are skipped immediately by `isTerminal()` and never re-reconciled — to verify a controller fix, always fire a new run; existing terminal runs stay as-is.
 
 ## Deploy / test cycle on minikube
 ```
 eval $(minikube docker-env) && docker build -t fusion-weave-operator:latest .
 kubectl rollout restart deployment/fusion-weave-operator -n fusion
 kubectl rollout restart deployment/fusion-weave-api -n fusion
-kubectl annotate weavetrigger <name> fusion-platform.io/fire=true -n fusion   # on-demand fire
+kubectl annotate weavetrigger <name> fusion-platform.io/fire=true --overwrite -n fusion   # on-demand fire; --overwrite required if trigger was already fired
 kubectl get fr -n fusion -w    # watch runs  (shortNames: fr=WeaveRun, ft=WeaveTrigger, fc=WeaveChain, fjt=WeaveJobTemplate, wst=WeaveServiceTemplate)
+kubectl get fr <name> -n fusion -o jsonpath='{.status.phase} {range .status.steps[*]}{.name}={.phase} {end}'   # inspect run+step phases in one shot
 kubectl get jobs -n fusion     # watch batch jobs
 kubectl port-forward svc/fusion-weave-api 8082:8082 -n fusion &   # expose REST API locally
 ```
@@ -66,7 +74,11 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - Stable resource name: `<chainName>-<stepName>` — same across runs, enabling rolling updates.
 - Owner = WeaveChain (not WeaveRun): resources survive run deletion. Never patch `spec.selector` after creation.
 - Selector labels `fusion-platform.io/chain` + `fusion-platform.io/step` — immutable, never include run name.
-- Step succeeds when `Deployment.Available=True`; WeaveChain controller then monitors health and auto-rollbacks after `unhealthyDuration`.
+- Step transitions to `StepPhaseDeployed` (non-terminal) when `Deployment.Available=True` — **not** `Succeeded`.
+- `Deployed` satisfies dependency checks (downstream steps can start once the service is up) but blocks `RunComplete` — the WeaveRun stays `Running` for the lifetime of the service.
+- Deploy step lifecycle: `Pending → Running → Deployed`; transitions to `Failed` only if the Deployment is deleted externally.
+- WeaveChain controller monitors health independently and auto-rollbacks after `unhealthyDuration`.
+- After changing `WeaveStepPhase` enum (e.g. adding `Deployed`): run `make generate`, then `kubectl apply -f config/crd/bases/` — cluster rejects status patches with unknown enum values until CRDs are updated.
 
 ## REST API (cmd/api)
 - `cmd/api/` binary is separate from the operator; build with `go build ./cmd/api` or run with `go run ./cmd/api`.

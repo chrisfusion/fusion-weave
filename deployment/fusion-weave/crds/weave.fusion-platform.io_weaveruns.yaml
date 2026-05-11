@@ -307,6 +307,7 @@ spec:
                       - Failed
                       - Skipped
                       - Retrying
+                      - Deployed
                       type: string
                     retryCount:
                       description: RetryCount tracks how many times this step has

@@ -202,3 +202,39 @@ func TestAdvance_StopAll(t *testing.T) {
 		t.Errorf("expected b=Skip, got %s", adv.Decisions["b"])
 	}
 }
+
+// TestAdvance_DeployedKeepsRunAlive verifies that a Deployed step prevents RunComplete
+// even when all other steps have succeeded.
+func TestAdvance_DeployedKeepsRunAlive(t *testing.T) {
+	nodes := []dag.Node{
+		{Name: "svc", RunOnSuccess: true},
+		{Name: "smoke", DependsOn: []string{"svc"}, RunOnSuccess: true},
+	}
+	g, _ := dag.BuildGraph(nodes)
+
+	adv := dag.Advance(g, states("svc", "Deployed", "smoke", "Succeeded"), dag.FailurePolicyContinueOthers)
+	if adv.RunComplete {
+		t.Error("expected run NOT complete while a Deployed step is active")
+	}
+	if adv.Decisions["svc"] != dag.DecisionTerminal {
+		t.Errorf("expected svc=Terminal, got %s", adv.Decisions["svc"])
+	}
+}
+
+// TestAdvance_DeployedSatisfiesDeps verifies that a downstream step starts once its
+// deploy dependency reaches the Deployed phase.
+func TestAdvance_DeployedSatisfiesDeps(t *testing.T) {
+	nodes := []dag.Node{
+		{Name: "svc", RunOnSuccess: true},
+		{Name: "smoke", DependsOn: []string{"svc"}, RunOnSuccess: true},
+	}
+	g, _ := dag.BuildGraph(nodes)
+
+	adv := dag.Advance(g, states("svc", "Deployed"), dag.FailurePolicyContinueOthers)
+	if adv.Decisions["smoke"] != dag.DecisionStart {
+		t.Errorf("expected smoke=Start once svc is Deployed, got %s", adv.Decisions["smoke"])
+	}
+	if adv.RunComplete {
+		t.Error("expected run NOT complete while svc is still Deployed")
+	}
+}
