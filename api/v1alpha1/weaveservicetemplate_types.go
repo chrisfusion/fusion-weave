@@ -69,6 +69,41 @@ type WeaveIngressSpec struct {
 	TLSSecretName string `json:"tlsSecretName,omitempty"`
 }
 
+// CodeSourceSpec references a versioned artifact in fusion-index to be fetched
+// and unpacked into the pod before the main container starts.
+type CodeSourceSpec struct {
+	// IndexURL is the fusion-index base URL.
+	// +kubebuilder:default="http://fusion-index-backend.fusion.svc.cluster.local:8080"
+	// +optional
+	IndexURL string `json:"indexURL,omitempty"`
+
+	// ArtifactName is the full artifact name in fusion-index (e.g. "org.myteam.myapp").
+	// +kubebuilder:validation:MinLength=1
+	ArtifactName string `json:"artifactName"`
+
+	// Tag is the mutable tag to track (e.g. "stable", "latest").
+	// The init container resolves the tag to a concrete version on every pod start.
+	// +kubebuilder:validation:MinLength=1
+	Tag string `json:"tag"`
+
+	// MountPath is the directory inside the main container where unpacked code is available.
+	// +kubebuilder:default="/weave-code"
+	// +optional
+	MountPath string `json:"mountPath,omitempty"`
+
+	// LoaderImage is the init container image used to fetch and unpack the artifact.
+	// Defaults to the operator image — override the command to /loader.
+	// +kubebuilder:default="fusion-code-loader:latest"
+	// +optional
+	LoaderImage string `json:"loaderImage,omitempty"`
+
+	// LoaderImagePullPolicy controls when the init container image is pulled.
+	// Defaults to IfNotPresent. Use Never for locally built images in minikube.
+	// +optional
+	// +kubebuilder:validation:Enum=Always;Never;IfNotPresent
+	LoaderImagePullPolicy corev1.PullPolicy `json:"loaderImagePullPolicy,omitempty"`
+}
+
 // WeaveServiceTemplateSpec defines the desired state of a long-running Deployment.
 type WeaveServiceTemplateSpec struct {
 	// Image is the container image to run.
@@ -142,6 +177,12 @@ type WeaveServiceTemplateSpec struct {
 	// +kubebuilder:default=5
 	// +kubebuilder:validation:Minimum=1
 	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
+
+	// CodeSource, when set, injects an init container that fetches and unpacks a
+	// versioned artifact from fusion-index before the main container starts.
+	// The artifact version is resolved from the specified tag on every pod start.
+	// +optional
+	CodeSource *CodeSourceSpec `json:"codeSource,omitempty"`
 }
 
 // WeaveServiceTemplateStatus reflects validation results for the template.

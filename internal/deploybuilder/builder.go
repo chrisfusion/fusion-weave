@@ -45,6 +45,49 @@ func Build(
 
 	volumes, mounts := buildVolumes(tmpl.Spec.Volumes)
 
+	var initContainers []corev1.Container
+	if cs := tmpl.Spec.CodeSource; cs != nil {
+		mountPath := cs.MountPath
+		if mountPath == "" {
+			mountPath = "/weave-code"
+		}
+		indexURL := cs.IndexURL
+		if indexURL == "" {
+			indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+		}
+		loaderImage := cs.LoaderImage
+		if loaderImage == "" {
+			loaderImage = "fusion-code-loader:latest"
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         "weave-code",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "weave-code",
+			MountPath: mountPath,
+		})
+		loaderPullPolicy := cs.LoaderImagePullPolicy
+		if loaderPullPolicy == "" {
+			loaderPullPolicy = corev1.PullIfNotPresent
+		}
+		initContainers = append(initContainers, corev1.Container{
+			Name:            "code-loader",
+			Image:           loaderImage,
+			ImagePullPolicy: loaderPullPolicy,
+			Command:         []string{"/loader"},
+			Env: []corev1.EnvVar{
+				{Name: "INDEX_URL", Value: indexURL},
+				{Name: "ARTIFACT_NAME", Value: cs.ArtifactName},
+				{Name: "ARTIFACT_TAG", Value: cs.Tag},
+				{Name: "MOUNT_PATH", Value: mountPath},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "weave-code", MountPath: mountPath},
+			},
+		})
+	}
+
 	container := corev1.Container{
 		Name:           "service",
 		Image:          tmpl.Spec.Image,
@@ -87,6 +130,7 @@ func Build(
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: tmpl.Spec.ServiceAccountName,
+					InitContainers:     initContainers,
 					Containers:         []corev1.Container{container},
 					Volumes:            volumes,
 				},

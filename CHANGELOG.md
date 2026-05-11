@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `codeSource` field on `WeaveServiceTemplate`: declares a fusion-index artifact and tag; the operator injects a `code-loader` init container that resolves the tag, downloads the archive, and unpacks it to a configurable mount path before the main container starts.
+- `fusion-platform.io/reload-deploy-step: <stepName>@<version>` annotation on `WeaveChain`: extensible one-shot trigger consumed by the chain reconciler; any external source (webhook, REST API, CI/CD) can set this annotation to cause a rolling restart that loads the new code version.
+- WeaveChain controller polls fusion-index every `CODE_SOURCE_POLL_INTERVAL` (default 60 s) for tag changes on deploy steps with `codeSource`; rolling restart is triggered automatically when the resolved version changes.
+- New `cmd/loader` binary (built into the operator image as `/loader`): init container entry point that resolves an artifact tag, downloads the archive from fusion-index, unpacks `.tar.gz` / `.zip` archives, and writes a `.version` file.
+- New `internal/indexclient` package: minimal `net/http` client for fusion-index tag resolution, used by the operator's polling loop and at deployment registration time.
+- Helm chart: `codeSource.pollInterval` value (default `"60s"`) maps to the `CODE_SOURCE_POLL_INTERVAL` env var on the operator pod.
+
 ---
 
 ## [0.2.0] — 2026-05-11

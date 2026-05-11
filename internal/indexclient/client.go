@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 fusion-platform contributors
+
+// Package indexclient provides a minimal HTTP client for querying the
+// fusion-index artifact registry. It is used by the operator to resolve
+// artifact tags to concrete semver versions for code-source polling.
+package indexclient
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+)
+
+// ErrNotFound is returned when the artifact or tag does not exist in fusion-index.
+var ErrNotFound = errors.New("not found in fusion-index")
+
+type artifactItem struct {
+	ID int64 `json:"id"`
+}
+
+type artifactListResponse struct {
+	Items []artifactItem `json:"items"`
+}
+
+type tagItem struct {
+	Tag string `json:"tag"`
+}
+
+type versionItem struct {
+	Major int       `json:"major"`
+	Minor int       `json:"minor"`
+	Patch int       `json:"patch"`
+	Tags  []tagItem `json:"tags"`
+}
+
+// ResolveTag returns the semver string (e.g. "1.2.0") that tag points to for
+// the named artifact in fusion-index. Returns ErrNotFound when the artifact or
+// tag is absent. The baseURL must not have a trailing slash.
+func ResolveTag(ctx context.Context, baseURL, artifactName, tag string) (string, error) {
+	id, err := findArtifactID(ctx, baseURL, artifactName)
+	if err != nil {
+		return "", err
+	}
+	return resolveTagForID(ctx, baseURL, id, tag)
+}
+
+func findArtifactID(ctx context.Context, baseURL, artifactName string) (int64, error) {
+	u := fmt.Sprintf("%s/api/v1/artifacts?name=%s", baseURL, url.QueryEscape(artifactName))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return 0, fmt.Errorf("indexclient: build request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("indexclient: GET artifacts: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("indexclient: GET artifacts: unexpected status %d", resp.StatusCode)
+	}
+
+	var list artifactListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return 0, fmt.Errorf("indexclient: decode artifacts: %w", err)
+	}
+	for _, item := range list.Items {
+		return item.ID, nil
+	}
+	return 0, ErrNotFound
+}
+
+func resolveTagForID(ctx context.Context, baseURL string, artifactID int64, tag string) (string, error) {
+	u := fmt.Sprintf("%s/api/v1/artifacts/%d/versions", baseURL, artifactID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", fmt.Errorf("indexclient: build request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("indexclient: GET versions: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("indexclient: GET versions: unexpected status %d", resp.StatusCode)
+	}
+
+	var versions []versionItem
+	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
+		return "", fmt.Errorf("indexclient: decode versions: %w", err)
+	}
+
+	for _, v := range versions {
+		for _, t := range v.Tags {
+			if t.Tag == tag {
+				return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch), nil
+			}
+		}
+	}
+	return "", ErrNotFound
+}

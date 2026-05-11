@@ -53,6 +53,9 @@ spec:
               port: {{ .Values.ports.health }}
             initialDelaySeconds: 5
             periodSeconds: 10
+          env:
+            - name: CODE_SOURCE_POLL_INTERVAL
+              value: {{ .Values.codeSource.pollInterval | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:

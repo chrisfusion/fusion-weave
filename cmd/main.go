@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -110,9 +111,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	codePollInterval := 60 * time.Second
+	if v := os.Getenv("CODE_SOURCE_POLL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			codePollInterval = d
+		}
+	}
 	if err := (&controller.WeaveChainReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		CodeSourcePollInterval: codePollInterval,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveChain controller")
 		os.Exit(1)

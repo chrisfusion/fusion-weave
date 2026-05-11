@@ -17,8 +17,10 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - `internal/deploybuilder/` — builds apps/v1 Deployment + Service + Ingress for deploy-kind steps
 - `internal/trigger/` — cron scheduler and webhook HTTP server
 - `internal/apiserver/` — REST API service (chi router, auth middleware, CRUD handlers for all 5 CRDs)
+- `internal/indexclient/` — minimal HTTP client for fusion-index tag resolution (used by code-source polling in chain controller)
 - `cmd/main.go` — wires manager, registers controllers, creates shared fire channel
 - `cmd/api/main.go` — entry point for the REST API server (separate from the operator)
+- `cmd/loader/main.go` — init container entry point for codeSource deploy steps; built into operator image as `/loader`
 
 ## Build
 - `go build ./...` — standard build
@@ -37,6 +39,7 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - Map iteration in Go is non-deterministic — sort step names before writing `run.Status.Steps` to avoid spurious status diffs.
 - Both `config/rbac/role.yaml` AND `deployment/fusion-weave/templates/role.yaml` are hand-maintained — `make generate` does NOT update either; edit both manually when CRD resource names or API group change.
 - Terminal runs (Succeeded/Failed/Stopped) are skipped immediately by `isTerminal()` and never re-reconciled — to verify a controller fix, always fire a new run; existing terminal runs stay as-is.
+- `dag.Advance` is called **twice** in `weaverun_controller.go`: once before the decisions loop (to get decisions) and once after (to recompute `RunComplete` using the post-decision `stepStates`). Do NOT remove the second call — without it, deploy steps cause the WeaveRun to complete immediately on first reconcile because the pre-decision states map is empty.
 
 ## Deploy / test cycle on minikube
 ```
@@ -45,10 +48,14 @@ kubectl rollout restart deployment/fusion-weave-operator -n fusion
 kubectl rollout restart deployment/fusion-weave-api -n fusion
 kubectl annotate weavetrigger <name> fusion-platform.io/fire=true --overwrite -n fusion   # on-demand fire; --overwrite required if trigger was already fired
 kubectl annotate weaveruns <run-name> fusion-platform.io/restart-step=<stepName> --overwrite -n fusion   # rolling restart a Deployed-phase deploy step; one-shot, annotation consumed by reconciler
+kubectl annotate weavechains <chain-name> fusion-platform.io/reload-deploy-step=<stepName>@<version> --overwrite -n fusion   # trigger code-source rolling restart; --overwrite required
 kubectl get fr -n fusion -w    # watch runs  (shortNames: fr=WeaveRun, ft=WeaveTrigger, fc=WeaveChain, fjt=WeaveJobTemplate, wst=WeaveServiceTemplate)
 kubectl get fr <name> -n fusion -o jsonpath='{.status.phase} {range .status.steps[*]}{.name}={.phase} {end}'   # inspect run+step phases in one shot
 kubectl get jobs -n fusion     # watch batch jobs
 kubectl port-forward svc/fusion-weave-api 8082:8082 -n fusion &   # expose REST API locally
+kubectl port-forward svc/fusion-index-backend 8099:8080 -n fusion &   # expose fusion-index locally for tag-move tests
+# WeaveRun API group is weave.fusion-platform.io (NOT fusion-platform.io) — use correct group when kubectl-applying runs manually:
+# apiVersion: weave.fusion-platform.io/v1alpha1
 ```
 
 ## Namespace
@@ -80,6 +87,11 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - Deploy step lifecycle: `Pending → Running → Deployed`; transitions to `Failed` only if the Deployment is deleted externally.
 - WeaveChain controller monitors health independently and auto-rollbacks after `unhealthyDuration`.
 - After changing `WeaveStepPhase` enum (e.g. adding `Deployed`): run `make generate`, then `kubectl apply -f config/crd/bases/` — cluster rejects status patches with unknown enum values until CRDs are updated.
+- `spec.codeSource` on WeaveServiceTemplate injects a `code-loader` init container: resolves a fusion-index artifact tag → version, downloads the archive, unpacks to `codeSource.mountPath` (default `/weave-code`) on every pod start. Tracks state in `WeaveChain.Status.ActiveDeployments[*].CodeSource*` fields.
+- `fusion-platform.io/reload-deploy-step: <stepName>@<version>` annotation on WeaveChain — one-shot rolling-restart trigger for code-source steps; consumed by `handleCodeReload` in chain controller. External callers (CI/CD, REST API, webhook) set this annotation; the internal polling loop calls `triggerCodeReload` directly without going through the annotation.
+- `CODE_SOURCE_POLL_INTERVAL` operator env var — how often the chain controller polls fusion-index for tag changes (default `60s`); set in `cmd/main.go`, stored on `WeaveChainReconciler.CodeSourcePollInterval`.
+- Health loop in `syncDeploymentHealth` uses `if/else` (not `continue`) so code-source polling runs for every entry regardless of deployment health — do not revert to `continue`-based structure.
+- fusion-index tag move for polling tests: `PUT /api/v1/artifacts/{id}/tags/{tag}` requires **both** `"version":"1.0.1"` and `"versionId":1001` — `versionId` alone returns 400. Same for `POST .../versions`: requires `"version":"1.0.1"` in addition to major/minor/patch.
 
 ## REST API (cmd/api)
 - `cmd/api/` binary is separate from the operator; build with `go build ./cmd/api` or run with `go run ./cmd/api`.
@@ -89,7 +101,7 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - Lazy auth init uses `sync.Once` — OIDC JWKS discovery happens on first request, not at startup.
 - `AllowUnauthenticated=true` grants full admin to all callers — logs a warning; never use in production.
 - SA auth requires a ClusterRole for TokenReview (cluster-scoped resource) — gated on `api.auth.saAuthEnabled` in Helm; raw YAML in `config/rbac/api-clusterrole.yaml`.
-- Both binaries (`/manager` and `/api-server`) are built into the same Docker image; API deployment overrides the entrypoint with `command: ["/api-server"]`.
+- Three binaries (`/manager`, `/api-server`, `/loader`) are built into the same Docker image; API deployment overrides entrypoint with `command: ["/api-server"]`; codeSource init containers use `command: ["/loader"]`.
 - Raw-YAML manifest for quick iteration: `kubectl apply -f config/rbac/api-*.yaml -f config/manager/api-server.yaml`
 - `PATCH /api/v1/{resource}/{name}` sends a JSON Merge Patch directly to Kubernetes — callers can set any metadata field including annotations (e.g. `{"metadata":{"annotations":{"fusion-platform.io/restart-step":"stepName"}}}`).
 
@@ -98,6 +110,7 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - `namespaceCreate=false` when namespace pre-exists (avoids Helm ownership conflict on re-install)
 - CRDs live in `crds/` — Helm installs them first, never deletes on uninstall; update manually with `kubectl apply -f deployment/fusion-weave/crds/` after `make generate`
 - Deploy with samples (shared-storage demo chain): add `--set samples.enabled=true --set samples.sharedStorage.storageClassName=csi-hostpath-sc`
+- `codeSource.pollInterval` — Go duration string controlling how often the chain controller polls fusion-index for tag changes (default `"60s"`); sets `CODE_SOURCE_POLL_INTERVAL` on the operator pod.
 - `api.enabled=false` to skip deploying the API server entirely.
 - `api.auth.saAuthEnabled=true` to enable SA TokenReview auth (also creates ClusterRole + ClusterRoleBinding for tokenreviews).
 

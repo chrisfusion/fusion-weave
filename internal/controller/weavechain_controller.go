@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,6 +26,7 @@ import (
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
 	"fusion-platform.io/fusion-weave/internal/dag"
 	"fusion-platform.io/fusion-weave/internal/deploybuilder"
+	"fusion-platform.io/fusion-weave/internal/indexclient"
 )
 
 // weaveChainGVK is used by WeaveRunReconciler to set owner references on
@@ -36,10 +38,23 @@ var weaveChainGVK = schema.GroupVersionKind{
 	Kind:    "WeaveChain",
 }
 
+// annotationReloadDeployStep is a one-shot annotation on WeaveChain that triggers
+// a rolling restart of the named deploy step with a new code-source version.
+// Format: "<stepName>@<version>" (e.g. "serve@1.2.1").
+// Any external trigger source (webhook, REST API, CI/CD) sets this annotation;
+// the reconciler consumes it and calls triggerCodeReload.
+const annotationReloadDeployStep = "fusion-platform.io/reload-deploy-step"
+
+// defaultCodeSourcePollInterval is used when CodeSourcePollInterval is not set.
+const defaultCodeSourcePollInterval = 60 * time.Second
+
 // WeaveChainReconciler validates WeaveChain DAG topology and referenced templates.
 type WeaveChainReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// CodeSourcePollInterval controls how often the controller checks fusion-index
+	// for tag changes on deploy steps with codeSource. Defaults to 60s.
+	CodeSourcePollInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weavechains,verbs=get;list;watch;create;update;patch;delete
@@ -51,6 +66,15 @@ func (r *WeaveChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var chain weavev1alpha1.WeaveChain
 	if err := r.Get(ctx, req.NamespacedName, &chain); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Handle one-shot reload annotation before anything else.
+	reloaded, err := r.handleCodeReload(ctx, &chain)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if reloaded {
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Capture patch base before any mutations.
@@ -226,53 +250,169 @@ func (r *WeaveChainReconciler) syncDeploymentHealth(ctx context.Context, chain *
 				chain.Status.ActiveDeployments[key] = entry
 				changed = true
 			}
-			continue
-		}
+		} else {
+			// Deployment is not available.
+			switch entry.Health {
+			case weavev1alpha1.DeployHealthHealthy, weavev1alpha1.DeployHealthUnknown, weavev1alpha1.DeployHealthRolledBack:
+				// Transition to Unhealthy.
+				now := metav1.Now()
+				entry.Health = weavev1alpha1.DeployHealthUnhealthy
+				entry.UnhealthySince = &now
+				entry.Message = "deployment is not available"
+				chain.Status.ActiveDeployments[key] = entry
+				changed = true
 
-		// Deployment is not available.
-		switch entry.Health {
-		case weavev1alpha1.DeployHealthHealthy, weavev1alpha1.DeployHealthUnknown, weavev1alpha1.DeployHealthRolledBack:
-			// Transition to Unhealthy.
-			now := metav1.Now()
-			entry.Health = weavev1alpha1.DeployHealthUnhealthy
-			entry.UnhealthySince = &now
-			entry.Message = "deployment is not available"
-			chain.Status.ActiveDeployments[key] = entry
-			changed = true
-
-		case weavev1alpha1.DeployHealthUnhealthy:
-			// Check if we've exceeded the threshold.
-			if entry.UnhealthySince != nil && entry.UnhealthyDurationSeconds > 0 {
-				threshold := time.Duration(entry.UnhealthyDurationSeconds) * time.Second
-				elapsed := time.Since(entry.UnhealthySince.Time)
-				if elapsed >= threshold {
-					logger.Info("triggering rollback", "deployment", entry.DeploymentName, "elapsed", elapsed)
-					if err := r.rollbackDeployment(ctx, chain.Namespace, &entry, &deploy); err != nil {
-						logger.Error(err, "rollback failed", "deployment", entry.DeploymentName)
-						entry.Message = fmt.Sprintf("rollback failed: %v", err)
+			case weavev1alpha1.DeployHealthUnhealthy:
+				// Check if we've exceeded the threshold.
+				if entry.UnhealthySince != nil && entry.UnhealthyDurationSeconds > 0 {
+					threshold := time.Duration(entry.UnhealthyDurationSeconds) * time.Second
+					elapsed := time.Since(entry.UnhealthySince.Time)
+					if elapsed >= threshold {
+						logger.Info("triggering rollback", "deployment", entry.DeploymentName, "elapsed", elapsed)
+						if err := r.rollbackDeployment(ctx, chain.Namespace, &entry, &deploy); err != nil {
+							logger.Error(err, "rollback failed", "deployment", entry.DeploymentName)
+							entry.Message = fmt.Sprintf("rollback failed: %v", err)
+						} else {
+							entry.Health = weavev1alpha1.DeployHealthRollingBack
+							now := metav1.Now()
+							entry.LastRollbackTime = &now
+							entry.Message = "rollback triggered"
+						}
+						chain.Status.ActiveDeployments[key] = entry
+						changed = true
 					} else {
-						entry.Health = weavev1alpha1.DeployHealthRollingBack
-						now := metav1.Now()
-						entry.LastRollbackTime = &now
-						entry.Message = "rollback triggered"
-					}
-					chain.Status.ActiveDeployments[key] = entry
-					changed = true
-				} else {
-					// Requeue when the threshold expires.
-					remaining := threshold - elapsed
-					if minRequeue == 0 || remaining < minRequeue {
-						minRequeue = remaining
+						// Requeue when the threshold expires.
+						remaining := threshold - elapsed
+						if minRequeue == 0 || remaining < minRequeue {
+							minRequeue = remaining
+						}
 					}
 				}
-			}
 
-		case weavev1alpha1.DeployHealthRollingBack:
-			// Still rolling back — nothing to do, wait for Available to flip.
+			case weavev1alpha1.DeployHealthRollingBack:
+				// Still rolling back — nothing to do, wait for Available to flip.
+			}
+		}
+
+		// Code-source tag polling: runs regardless of deployment health.
+		// Check if the tracked tag in fusion-index has moved to a new version.
+		if entry.CodeSourceArtifact != "" {
+			pollInterval := r.CodeSourcePollInterval
+			if pollInterval <= 0 {
+				pollInterval = defaultCodeSourcePollInterval
+			}
+			if minRequeue == 0 || pollInterval < minRequeue {
+				minRequeue = pollInterval
+			}
+			current, resolveErr := indexclient.ResolveTag(ctx,
+				entry.CodeSourceIndexURL, entry.CodeSourceArtifact, entry.CodeSourceTag)
+			if resolveErr != nil {
+				logger.Error(resolveErr, "code-source tag resolve failed",
+					"artifact", entry.CodeSourceArtifact, "tag", entry.CodeSourceTag)
+			} else if current != "" && current != entry.CodeSourceDeployedVersion {
+				logger.Info("code-source version changed, triggering rolling restart",
+					"artifact", entry.CodeSourceArtifact,
+					"old", entry.CodeSourceDeployedVersion, "new", current)
+				if reloadErr := r.triggerCodeReload(ctx, chain.Namespace, &entry, current); reloadErr != nil {
+					logger.Error(reloadErr, "code-source rolling restart failed",
+						"deployment", entry.DeploymentName)
+				} else {
+					entry.CodeSourceDeployedVersion = current
+					chain.Status.ActiveDeployments[key] = entry
+					changed = true
+				}
+			}
 		}
 	}
 
 	return minRequeue, changed
+}
+
+// triggerCodeReload patches restartedAt on the named Deployment to force a rolling
+// restart, and annotates the pod template with the new code-source version.
+// This is the single action invoked by all reload trigger sources.
+func (r *WeaveChainReconciler) triggerCodeReload(
+	ctx context.Context,
+	namespace string,
+	entry *weavev1alpha1.WeaveActiveDeploymentStatus,
+	newVersion string,
+) error {
+	var deploy appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: namespace, Name: entry.DeploymentName,
+	}, &deploy); err != nil {
+		return fmt.Errorf("get deployment for code reload: %w", err)
+	}
+
+	deployPatch := client.MergeFrom(deploy.DeepCopy())
+	if deploy.Spec.Template.Annotations == nil {
+		deploy.Spec.Template.Annotations = map[string]string{}
+	}
+	deploy.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().UTC().Format(time.RFC3339)
+	deploy.Spec.Template.Annotations["fusion-platform.io/code-source-version"] = newVersion
+	if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
+		return fmt.Errorf("patch deployment for code reload: %w", err)
+	}
+	return nil
+}
+
+// handleCodeReload processes the fusion-platform.io/reload-deploy-step annotation.
+// Format: "<stepName>@<version>". Calls triggerCodeReload, updates
+// CodeSourceDeployedVersion in chain status, and consumes the annotation.
+// Returns (true, nil) when a restart was issued; the caller should requeue.
+// This is the entry point for all external reload triggers (webhook, REST API, etc.).
+func (r *WeaveChainReconciler) handleCodeReload(ctx context.Context, chain *weavev1alpha1.WeaveChain) (bool, error) {
+	logger := log.FromContext(ctx)
+	val, ok := chain.Annotations[annotationReloadDeployStep]
+	if !ok || val == "" {
+		return false, nil
+	}
+
+	stepName, newVersion, found := strings.Cut(val, "@")
+
+	// Always consume the annotation, even when the value is malformed or the step
+	// is not found — same one-shot semantics as restart-step on WeaveRun.
+	metaPatch := client.MergeFrom(chain.DeepCopy())
+	delete(chain.Annotations, annotationReloadDeployStep)
+	if err := r.Patch(ctx, chain, metaPatch); err != nil {
+		return false, fmt.Errorf("consume reload annotation: %w", err)
+	}
+
+	if !found || stepName == "" || newVersion == "" {
+		logger.Info("reload-deploy-step annotation ignored: malformed value", "value", val)
+		return false, nil
+	}
+
+	// Find the active deployment entry for the named step.
+	var matchKey string
+	var matchEntry weavev1alpha1.WeaveActiveDeploymentStatus
+	for k, e := range chain.Status.ActiveDeployments {
+		if e.StepName == stepName {
+			matchKey = k
+			matchEntry = e
+			break
+		}
+	}
+	if matchKey == "" {
+		logger.Info("reload-deploy-step annotation ignored: step not in active deployments", "step", stepName)
+		return false, nil
+	}
+
+	if err := r.triggerCodeReload(ctx, chain.Namespace, &matchEntry, newVersion); err != nil {
+		return false, err
+	}
+
+	// Update CodeSourceDeployedVersion so the polling loop does not immediately
+	// trigger a second restart.
+	statusPatch := client.MergeFrom(chain.DeepCopy())
+	matchEntry.CodeSourceDeployedVersion = newVersion
+	chain.Status.ActiveDeployments[matchKey] = matchEntry
+	if err := r.Status().Patch(ctx, chain, statusPatch); err != nil {
+		return false, fmt.Errorf("patch chain status after code reload: %w", err)
+	}
+
+	logger.Info("code reload triggered via annotation", "step", stepName, "version", newVersion)
+	return true, nil
 }
 
 // rollbackDeployment finds the previous ReplicaSet revision and patches the

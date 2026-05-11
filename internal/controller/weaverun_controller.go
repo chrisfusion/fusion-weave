@@ -31,6 +31,7 @@ import (
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
 	"fusion-platform.io/fusion-weave/internal/dag"
 	"fusion-platform.io/fusion-weave/internal/deploybuilder"
+	"fusion-platform.io/fusion-weave/internal/indexclient"
 	"fusion-platform.io/fusion-weave/internal/jobbuilder"
 )
 
@@ -402,6 +403,7 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				if err := r.syncDeployStep(ctx, &chain, &run, stepSpec, svcTmpl, &ss); err != nil {
 					return ctrl.Result{}, fmt.Errorf("sync deploy step %q: %w", stepName, err)
 				}
+				stepStates[stepName] = dag.StepPhaseRunning
 				// Poll every 10s while waiting for the Deployment to become Available.
 				if requeueAfter == 0 || 10*time.Second < requeueAfter {
 					requeueAfter = 10 * time.Second
@@ -460,6 +462,10 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 		}
 	}
+
+	// Re-evaluate after applying decisions so newly-started steps (Running/Deployed)
+	// are reflected in RunComplete — prevents premature completion on first reconcile.
+	advancement = dag.Advance(graph, stepStates, dag.FailurePolicy(chain.Spec.FailurePolicy))
 
 	// H1 fix: rebuild the steps slice in deterministic (alphabetical) order.
 	stepNames := make([]string, 0, len(stepMap))
@@ -623,6 +629,25 @@ func (r *WeaveRunReconciler) registerActiveDeployment(
 		StepName:                 stepName,
 		Health:                   weavev1alpha1.DeployHealthHealthy,
 		UnhealthyDurationSeconds: int64(dur.Seconds()),
+	}
+
+	// Populate code-source tracking fields when the template has a codeSource.
+	// Resolve the initial version best-effort; a failure is non-fatal — the
+	// polling loop will populate it on the first successful poll.
+	if cs := svcTmpl.Spec.CodeSource; cs != nil {
+		indexURL := cs.IndexURL
+		if indexURL == "" {
+			indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+		}
+		entry.CodeSourceArtifact = cs.ArtifactName
+		entry.CodeSourceTag = cs.Tag
+		entry.CodeSourceIndexURL = indexURL
+		if version, resolveErr := indexclient.ResolveTag(ctx, indexURL, cs.ArtifactName, cs.Tag); resolveErr == nil {
+			entry.CodeSourceDeployedVersion = version
+		} else {
+			log.FromContext(ctx).Error(resolveErr, "could not resolve initial code-source version",
+				"artifact", cs.ArtifactName, "tag", cs.Tag)
+		}
 	}
 
 	patch := client.MergeFrom(chain.DeepCopy())

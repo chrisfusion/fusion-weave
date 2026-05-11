@@ -13,6 +13,7 @@ COPY internal/ internal/
 
 RUN CGO_ENABLED=0 GOOS=linux go build -a -o manager ./cmd/
 RUN CGO_ENABLED=0 GOOS=linux go build -a -o api-server ./cmd/api/
+RUN CGO_ENABLED=0 GOOS=linux go build -a -o loader ./cmd/loader/
 
 # Runtime stage
 FROM gcr.io/distroless/static:nonroot
@@ -21,8 +22,10 @@ WORKDIR /
 
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/api-server .
+COPY --from=builder /workspace/loader .
 
 USER 65532:65532
 
-# Default entrypoint is the operator. Override with /api-server for the REST API deployment.
+# Default entrypoint is the operator. Override with /api-server for the REST API deployment,
+# or /loader for code-source init containers (WeaveServiceTemplate.spec.codeSource.loaderImage).
 ENTRYPOINT ["/manager"]

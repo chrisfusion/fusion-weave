@@ -101,6 +101,12 @@ api:
       brokers: ""
       topic: "weave-logs"
 
+# Code-source polling configuration.
+# Controls how often the chain controller checks fusion-index for artifact tag changes.
+codeSource:
+  # pollInterval is a Go duration string (e.g. "30s", "2m"). Maps to CODE_SOURCE_POLL_INTERVAL.
+  pollInterval: "60s"
+
 # Sample resources deployed alongside the operator.
 # Disabled by default — enable to get a working shared-storage demo chain.
 # Deploy with: helm upgrade --install ... --set samples.enabled=true

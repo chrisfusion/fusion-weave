@@ -313,6 +313,24 @@ spec:
                   description: WeaveActiveDeploymentStatus tracks the health of a
                     Deployment created by a deploy step.
                   properties:
+                    codeSourceArtifact:
+                      description: |-
+                        CodeSourceArtifact is the fusion-index artifact name tracked by this deployment.
+                        Empty when the step has no codeSource.
+                      type: string
+                    codeSourceDeployedVersion:
+                      description: |-
+                        CodeSourceDeployedVersion is the artifact version currently loaded in running pods.
+                        Updated each time a rolling restart is triggered by a code-source change.
+                      type: string
+                    codeSourceIndexURL:
+                      description: CodeSourceIndexURL is the fusion-index base URL
+                        used for polling.
+                      type: string
+                    codeSourceTag:
+                      description: CodeSourceTag is the mutable tag being tracked
+                        (e.g. "stable").
+                      type: string
                     currentRevision:
                       description: CurrentRevision is the Deployment revision currently
                         running.

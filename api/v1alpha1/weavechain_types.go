@@ -91,6 +91,24 @@ type WeaveActiveDeploymentStatus struct {
 	// Message is a human-readable status detail.
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// CodeSourceArtifact is the fusion-index artifact name tracked by this deployment.
+	// Empty when the step has no codeSource.
+	// +optional
+	CodeSourceArtifact string `json:"codeSourceArtifact,omitempty"`
+
+	// CodeSourceTag is the mutable tag being tracked (e.g. "stable").
+	// +optional
+	CodeSourceTag string `json:"codeSourceTag,omitempty"`
+
+	// CodeSourceIndexURL is the fusion-index base URL used for polling.
+	// +optional
+	CodeSourceIndexURL string `json:"codeSourceIndexURL,omitempty"`
+
+	// CodeSourceDeployedVersion is the artifact version currently loaded in running pods.
+	// Updated each time a rolling restart is triggered by a code-source change.
+	// +optional
+	CodeSourceDeployedVersion string `json:"codeSourceDeployedVersion,omitempty"`
 }
 
 // WeaveChainStep defines one node in the DAG.
