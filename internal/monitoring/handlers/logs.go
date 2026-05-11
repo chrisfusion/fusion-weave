@@ -60,38 +60,70 @@ func (h *LogsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var jobName string
+	var jobName, deploymentName string
 	for _, s := range run.Status.Steps {
-		if s.Name == stepName && s.JobRef != nil {
-			jobName = s.JobRef.Name
+		if s.Name == stepName {
+			if s.JobRef != nil {
+				jobName = s.JobRef.Name
+			}
+			if s.DeploymentRef != nil {
+				deploymentName = s.DeploymentRef.Name
+			}
 			break
 		}
 	}
-	if jobName == "" {
+
+	var pod corev1.Pod
+	var containerName string
+
+	switch {
+	case jobName != "":
+		podList, err := h.KubeClient.CoreV1().Pods(h.Namespace).List(r.Context(), metav1.ListOptions{
+			LabelSelector: "job-name=" + jobName,
+		})
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		if len(podList.Items) == 0 {
+			writeError(w, http.StatusNotFound, "no pods found for step")
+			return
+		}
+		sort.Slice(podList.Items, func(i, j int) bool {
+			return podList.Items[i].CreationTimestamp.After(podList.Items[j].CreationTimestamp.Time)
+		})
+		pod = podList.Items[0]
+		containerName = "job"
+
+	case deploymentName != "":
+		deploy, err := h.KubeClient.AppsV1().Deployments(h.Namespace).Get(r.Context(), deploymentName, metav1.GetOptions{})
+		if err != nil {
+			handleGetErr(w, r, err)
+			return
+		}
+		selector, err := metav1.LabelSelectorAsSelector(deploy.Spec.Selector)
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		podList, err := h.KubeClient.CoreV1().Pods(h.Namespace).List(r.Context(), metav1.ListOptions{
+			LabelSelector: selector.String(),
+		})
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		if len(podList.Items) == 0 {
+			writeError(w, http.StatusNotFound, "no pods found for deployment")
+			return
+		}
+		pod = pickBestPod(podList.Items)
+		containerName = deploy.Spec.Template.Spec.Containers[0].Name
+
+	default:
 		writeError(w, http.StatusNotFound, "step not found or has no associated job")
 		return
 	}
-
-	// List pods for the job using Kubernetes' native job-name label.
-	podList, err := h.KubeClient.CoreV1().Pods(h.Namespace).List(r.Context(), metav1.ListOptions{
-		LabelSelector: "job-name=" + jobName,
-	})
-	if err != nil {
-		internalError(w, r, err)
-		return
-	}
-	if len(podList.Items) == 0 {
-		writeError(w, http.StatusNotFound, "no pods found for step")
-		return
-	}
-
-	// Pick the most recently created pod.
-	sort.Slice(podList.Items, func(i, j int) bool {
-		return podList.Items[i].CreationTimestamp.After(
-			podList.Items[j].CreationTimestamp.Time,
-		)
-	})
-	pod := podList.Items[0]
 
 	// Fetch the log snapshot with a bounded timeout.
 	tailLines := int64(h.MaxLogLines)
@@ -99,7 +131,7 @@ func (h *LogsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	stream, err := h.KubeClient.CoreV1().Pods(h.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		Container: "job", // jobbuilder always names the container "job"
+		Container: containerName,
 		TailLines: &tailLines,
 	}).Stream(ctx)
 	if err != nil {
@@ -143,4 +175,18 @@ func (h *LogsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// pickBestPod returns the Running pod with the latest creation timestamp,
+// falling back to the most-recently created pod if none is Running.
+func pickBestPod(pods []corev1.Pod) corev1.Pod {
+	sort.Slice(pods, func(i, j int) bool {
+		iRunning := pods[i].Status.Phase == corev1.PodRunning
+		jRunning := pods[j].Status.Phase == corev1.PodRunning
+		if iRunning != jRunning {
+			return iRunning
+		}
+		return pods[i].CreationTimestamp.After(pods[j].CreationTimestamp.Time)
+	})
+	return pods[0]
 }
