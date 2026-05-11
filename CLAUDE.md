@@ -44,6 +44,7 @@ eval $(minikube docker-env) && docker build -t fusion-weave-operator:latest .
 kubectl rollout restart deployment/fusion-weave-operator -n fusion
 kubectl rollout restart deployment/fusion-weave-api -n fusion
 kubectl annotate weavetrigger <name> fusion-platform.io/fire=true --overwrite -n fusion   # on-demand fire; --overwrite required if trigger was already fired
+kubectl annotate weaveruns <run-name> fusion-platform.io/restart-step=<stepName> --overwrite -n fusion   # rolling restart a Deployed-phase deploy step; one-shot, annotation consumed by reconciler
 kubectl get fr -n fusion -w    # watch runs  (shortNames: fr=WeaveRun, ft=WeaveTrigger, fc=WeaveChain, fjt=WeaveJobTemplate, wst=WeaveServiceTemplate)
 kubectl get fr <name> -n fusion -o jsonpath='{.status.phase} {range .status.steps[*]}{.name}={.phase} {end}'   # inspect run+step phases in one shot
 kubectl get jobs -n fusion     # watch batch jobs
@@ -90,6 +91,7 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - SA auth requires a ClusterRole for TokenReview (cluster-scoped resource) — gated on `api.auth.saAuthEnabled` in Helm; raw YAML in `config/rbac/api-clusterrole.yaml`.
 - Both binaries (`/manager` and `/api-server`) are built into the same Docker image; API deployment overrides the entrypoint with `command: ["/api-server"]`.
 - Raw-YAML manifest for quick iteration: `kubectl apply -f config/rbac/api-*.yaml -f config/manager/api-server.yaml`
+- `PATCH /api/v1/{resource}/{name}` sends a JSON Merge Patch directly to Kubernetes — callers can set any metadata field including annotations (e.g. `{"metadata":{"annotations":{"fusion-platform.io/restart-step":"stepName"}}}`).
 
 ## Helm chart (deployment/fusion-weave/)
 - Install on minikube: `helm upgrade --install fusion-weave deployment/fusion-weave/ --set image.repository=fusion-weave-operator --set image.tag=latest --set image.pullPolicy=Never --set namespace=fusion --set namespaceCreate=false`

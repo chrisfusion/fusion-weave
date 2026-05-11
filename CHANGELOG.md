@@ -7,6 +7,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `fusion-platform.io/restart-step=<stepName>` annotation on a WeaveRun triggers a rolling restart of the named Deploy-kind step's Deployment (sets `kubectl.kubernetes.io/restartedAt` on the pod template); annotation is consumed after one use.
+
 ### Fixed
 - Monitor logs endpoint (`GET /monitor/v1/runs/{name}/steps/{step}/logs`) returned 404 for Deploy-kind steps because it only resolved pods via `jobRef`; added `deploymentRef` path that looks up pods via the Deployment's label selector and picks the best Running pod.
 - Deploy steps (stepKind: Deploy) incorrectly transitioned to `Succeeded` once the Deployment became Available, causing the WeaveRun to be marked `Succeeded` while the service was still running. Introduced `StepPhaseDeployed` — a non-terminal active phase that satisfies downstream dependency checks (smoketest can still start after the service is ready) but keeps the WeaveRun in `Running` for the lifetime of the service. The controller now polls deployed steps every 30 s and marks them `Failed` if their Deployment is deleted externally.

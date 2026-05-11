@@ -34,6 +34,8 @@ import (
 	"fusion-platform.io/fusion-weave/internal/jobbuilder"
 )
 
+const annotationRestartStep = "fusion-platform.io/restart-step"
+
 // weaveRunGVK is the GVK used when constructing owner references.
 // r.Get zeroes out TypeMeta on returned objects, so we set it explicitly.
 var weaveRunGVK = schema.GroupVersionKind{
@@ -118,6 +120,13 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err := r.Status().Patch(ctx, &run, base); err != nil {
 			return ctrl.Result{}, fmt.Errorf("record shared PVC name: %w", err)
 		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Handle one-shot rolling restart of a deploy step.
+	if restarted, err := r.handleRestartStep(ctx, &run); err != nil {
+		return ctrl.Result{}, err
+	} else if restarted {
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -796,6 +805,56 @@ func getOrCreateStep(stepMap map[string]weavev1alpha1.WeaveRunStepStatus, name s
 		Name:  name,
 		Phase: weavev1alpha1.StepPhasePending,
 	}
+}
+
+// handleRestartStep checks for the fusion-platform.io/restart-step annotation on a
+// WeaveRun and, if the named step is Deployed, triggers a rolling restart of its
+// Deployment by setting the kubectl restartedAt pod-template annotation. The
+// annotation is consumed (deleted) after the patch so it acts as a one-shot trigger.
+// Returns (true, nil) when a restart was issued; the caller should requeue.
+func (r *WeaveRunReconciler) handleRestartStep(ctx context.Context, run *weavev1alpha1.WeaveRun) (bool, error) {
+	stepName, ok := run.Annotations[annotationRestartStep]
+	if !ok || stepName == "" {
+		return false, nil
+	}
+
+	// Find the step in the run's status.
+	var ss *weavev1alpha1.WeaveRunStepStatus
+	for i := range run.Status.Steps {
+		if run.Status.Steps[i].Name == stepName {
+			ss = &run.Status.Steps[i]
+			break
+		}
+	}
+
+	// Always consume the annotation, even if the step is not restartable.
+	metaPatch := client.MergeFrom(run.DeepCopy())
+	delete(run.Annotations, annotationRestartStep)
+	if err := r.Patch(ctx, run, metaPatch); err != nil {
+		return false, fmt.Errorf("remove restart-step annotation: %w", err)
+	}
+
+	if ss == nil || ss.Phase != weavev1alpha1.StepPhaseDeployed || ss.DeploymentRef == nil {
+		log.FromContext(ctx).Info("restart-step annotation ignored: step not in Deployed phase", "step", stepName)
+		return false, nil
+	}
+
+	var deploy appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: ss.DeploymentRef.Name}, &deploy); err != nil {
+		return false, fmt.Errorf("get deployment for restart: %w", err)
+	}
+
+	deployPatch := client.MergeFrom(deploy.DeepCopy())
+	if deploy.Spec.Template.Annotations == nil {
+		deploy.Spec.Template.Annotations = map[string]string{}
+	}
+	deploy.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().UTC().Format(time.RFC3339)
+	if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
+		return false, fmt.Errorf("patch deployment for restart: %w", err)
+	}
+
+	log.FromContext(ctx).Info("rolling restart triggered", "step", stepName, "deployment", ss.DeploymentRef.Name)
+	return true, nil
 }
 
 func isTerminal(phase weavev1alpha1.WeaveRunPhase) bool {
