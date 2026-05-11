@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.2.0] — 2026-05-11
+
 ### Added
 - `fusion-platform.io/restart-step=<stepName>` annotation on a WeaveRun triggers a rolling restart of the named Deploy-kind step's Deployment (sets `kubectl.kubernetes.io/restartedAt` on the pod template); annotation is consumed after one use.
 
