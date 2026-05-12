@@ -13,6 +13,29 @@ image:
   tag: "latest"
   pullPolicy: IfNotPresent
 
+# Extra annotations added to the operator pod template.
+# Useful for tooling (e.g. Datadog APM, Vault agent) or custom admission webhooks.
+podAnnotations: {}
+
+# Extra labels added to the operator pod template.
+# Useful for NetworkPolicies, PodDisruptionBudgets, or tag-based monitoring.
+podLabels: {}
+
+# Pod-level security context for the operator pod.
+# Fields map 1:1 to corev1.PodSecurityContext — any valid field can be set here.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+# Container-level security context for the operator container.
+# Fields map 1:1 to corev1.SecurityContext.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true
+
 # Number of operator replicas. Set >1 only together with leaderElection.enabled=true.
 replicaCount: 1
 
@@ -60,6 +83,25 @@ api:
 
   replicaCount: 1
 
+  # Extra annotations added to the API server pod template.
+  podAnnotations: {}
+
+  # Extra labels added to the API server pod template.
+  podLabels: {}
+
+  # Pod-level security context for the API server pod.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+
+  # Container-level security context for the API server container.
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+
   resources:
     requests:
       cpu: 50m
@@ -100,6 +142,38 @@ api:
     kafka:
       brokers: ""
       topic: "weave-logs"
+
+# Security defaults applied to every pod the operator creates at runtime —
+# both batch Job pods (job steps) and Deployment pods (deploy steps).
+# These are separate from the operator/API pod security configured above.
+# All values are serialized to JSON and passed to the operator via
+# WORKLOAD_SECURITY_DEFAULTS; the operator applies them to every pod it creates.
+workload:
+  security:
+    # Extra annotations merged into every workload pod template.
+    # Use for Seccomp/AppArmor annotations, Istio injection, Datadog APM, etc.
+    podAnnotations: {}
+
+    # Extra labels merged into every workload pod template.
+    # Use for NetworkPolicies, PodDisruptionBudgets, monitoring tag selectors.
+    podLabels: {}
+
+    # Pod-level security context for every workload pod.
+    # Supports any corev1.PodSecurityContext field (e.g. seccompProfile, runAsUser).
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      fsGroup: 65532
+      seccompProfile:
+        type: RuntimeDefault
+
+    # Container-level security context applied to every workload container,
+    # including the code-loader init container in deploy steps.
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
 
 # Code-source polling configuration.
 # Controls how often the chain controller checks fusion-index for artifact tag changes.

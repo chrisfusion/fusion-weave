@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/security"
 )
 
 // inputVolumeName is the volume name used when mounting upstream step outputs.
@@ -66,6 +67,7 @@ func JobName(runName, stepName string, retryCount int32) string {
 // inputConfigMap is the name of the run's output ConfigMap; pass a non-empty
 // value only when the step has ConsumesOutputFrom entries and the merged input
 // JSON key has already been written to the ConfigMap.
+// sec carries operator-wide security defaults applied to the pod and container.
 func Build(
 	template *weavev1alpha1.WeaveJobTemplate,
 	step *weavev1alpha1.WeaveChainStep,
@@ -73,6 +75,7 @@ func Build(
 	retryCount int32,
 	inputConfigMap string,
 	sharedPVCName string,
+	sec security.Defaults,
 ) *batchv1.Job {
 	name := JobName(run.Name, step.Name, retryCount)
 	ns := run.Namespace
@@ -126,6 +129,22 @@ func Build(
 	// backoffLimit is always 0 — the operator manages retries itself.
 	backoffLimit := int32(0)
 
+	podLabels := make(map[string]string, 3+len(sec.PodLabels))
+	for k, v := range sec.PodLabels {
+		podLabels[k] = v
+	}
+	podLabels["fusion-platform.io/run"] = run.Name
+	podLabels["fusion-platform.io/step"] = step.Name
+	podLabels["fusion-platform.io/chain"] = run.Spec.ChainRef.Name
+
+	var podAnnotations map[string]string
+	if len(sec.PodAnnotations) > 0 {
+		podAnnotations = make(map[string]string, len(sec.PodAnnotations))
+		for k, v := range sec.PodAnnotations {
+			podAnnotations[k] = v
+		}
+	}
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -142,18 +161,24 @@ func Build(
 			ActiveDeadlineSeconds: template.Spec.ActiveDeadlineSeconds,
 			BackoffLimit:          &backoffLimit,
 			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      podLabels,
+					Annotations: podAnnotations,
+				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
 					ServiceAccountName: template.Spec.ServiceAccountName,
+					SecurityContext:    sec.PodSecurityContext,
 					Containers: []corev1.Container{
 						{
-							Name:         "job",
-							Image:        template.Spec.Image,
-							Command:      template.Spec.Command,
-							Args:         template.Spec.Args,
-							Env:          env,
-							Resources:    template.Spec.Resources,
-							VolumeMounts: mounts,
+							Name:            "job",
+							Image:           template.Spec.Image,
+							Command:         template.Spec.Command,
+							Args:            template.Spec.Args,
+							Env:             env,
+							Resources:       template.Spec.Resources,
+							VolumeMounts:    mounts,
+							SecurityContext: sec.ContainerSecurityContext,
 						},
 					},
 					Volumes: volumes,

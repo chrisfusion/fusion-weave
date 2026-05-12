@@ -15,12 +15,19 @@ spec:
     metadata:
       labels:
         {{- include "fusion-weave.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- with .Values.podSecurityContext }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        fsGroup: 65532
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: manager
           image: {{ include "fusion-weave.image" . }}
@@ -56,10 +63,11 @@ spec:
           env:
             - name: CODE_SOURCE_POLL_INTERVAL
               value: {{ .Values.codeSource.pollInterval | quote }}
+            - name: WORKLOAD_SECURITY_DEFAULTS
+              value: {{ toJson .Values.workload.security | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.containerSecurityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-            readOnlyRootFilesystem: true
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

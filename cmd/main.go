@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"os"
 	"time"
@@ -21,6 +22,7 @@ import (
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
 	"fusion-platform.io/fusion-weave/internal/controller"
+	"fusion-platform.io/fusion-weave/internal/security"
 	"fusion-platform.io/fusion-weave/internal/trigger"
 )
 
@@ -134,10 +136,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	var securityDefaults security.Defaults
+	if v := os.Getenv("WORKLOAD_SECURITY_DEFAULTS"); v != "" {
+		if err := json.Unmarshal([]byte(v), &securityDefaults); err != nil {
+			logger.Error(err, "invalid WORKLOAD_SECURITY_DEFAULTS")
+			os.Exit(1)
+		}
+	}
+
 	if err := (&controller.WeaveRunReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		KubeClient: kubeClient,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		KubeClient:       kubeClient,
+		SecurityDefaults: securityDefaults,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveRun controller")
 		os.Exit(1)

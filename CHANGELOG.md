@@ -8,6 +8,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Helm-configurable security contexts, annotations, and labels for all pods managed by the operator.
+  - `podSecurityContext` / `containerSecurityContext` / `podAnnotations` / `podLabels` values for the operator pod.
+  - `api.podSecurityContext` / `api.containerSecurityContext` / `api.podAnnotations` / `api.podLabels` values for the API server pod (independently configurable).
+  - `workload.security.podSecurityContext` / `workload.security.containerSecurityContext` / `workload.security.podAnnotations` / `workload.security.podLabels` values applied uniformly to every pod the operator creates (batch Job pods and deploy-step Deployment pods, including `code-loader` init containers).
+  - `workload.security.podSecurityContext.seccompProfile` supported: set `type: RuntimeDefault` or `type: Localhost` with `localhostProfile: <path>`.
+  - Previously hardcoded security contexts on operator and API pods are now values-driven defaults that can be overridden per environment.
+- New `internal/security` package: `security.Defaults` struct used to carry workload security config from `cmd/main.go` through `WeaveRunReconciler` into `jobbuilder` and `deploybuilder`.
+
 - `codeSource` field on `WeaveServiceTemplate`: declares a fusion-index artifact and tag; the operator injects a `code-loader` init container that resolves the tag, downloads the archive, and unpacks it to a configurable mount path before the main container starts.
 - `fusion-platform.io/reload-deploy-step: <stepName>@<version>` annotation on `WeaveChain`: extensible one-shot trigger consumed by the chain reconciler; any external source (webhook, REST API, CI/CD) can set this annotation to cause a rolling restart that loads the new code version.
 - WeaveChain controller polls fusion-index every `CODE_SOURCE_POLL_INTERVAL` (default 60 s) for tag changes on deploy steps with `codeSource`; rolling restart is triggered automatically when the resolved version changes.

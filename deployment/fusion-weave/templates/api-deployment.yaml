@@ -16,12 +16,19 @@ spec:
     metadata:
       labels:
         {{- include "fusion-weave.api.selectorLabels" . | nindent 8 }}
+        {{- with .Values.api.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.api.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ .Values.api.serviceAccount.name }}
+      {{- with .Values.api.podSecurityContext }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        fsGroup: 65532
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: api-server
           image: {{ include "fusion-weave.api.image" . }}
@@ -85,9 +92,8 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+          {{- with .Values.api.containerSecurityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-            readOnlyRootFilesystem: true
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 {{- end }}

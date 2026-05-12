@@ -33,6 +33,7 @@ import (
 	"fusion-platform.io/fusion-weave/internal/deploybuilder"
 	"fusion-platform.io/fusion-weave/internal/indexclient"
 	"fusion-platform.io/fusion-weave/internal/jobbuilder"
+	"fusion-platform.io/fusion-weave/internal/security"
 )
 
 const annotationRestartStep = "fusion-platform.io/restart-step"
@@ -48,8 +49,9 @@ var weaveRunGVK = schema.GroupVersionKind{
 // WeaveRunReconciler executes the DAG of a WeaveRun by managing batch/v1 Jobs.
 type WeaveRunReconciler struct {
 	client.Client
-	Scheme     *runtime.Scheme
-	KubeClient kubernetes.Interface
+	Scheme           *runtime.Scheme
+	KubeClient       kubernetes.Interface
+	SecurityDefaults security.Defaults
 }
 
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weaveruns,verbs=get;list;watch;create;update;patch;delete
@@ -434,7 +436,7 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					inputConfigMap = cmName
 				}
 
-				job := jobbuilder.Build(tmpl, stepSpec, &run, ss.RetryCount, inputConfigMap, run.Status.SharedPVCName)
+				job := jobbuilder.Build(tmpl, stepSpec, &run, ss.RetryCount, inputConfigMap, run.Status.SharedPVCName, r.SecurityDefaults)
 				job.OwnerReferences = []metav1.OwnerReference{
 					*metav1.NewControllerRef(runWithGVK, weaveRunGVK),
 				}
@@ -525,7 +527,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	deployName := deploybuilder.DeploymentName(chain.Name, stepSpec.Name)
 
 	// Upsert Deployment.
-	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace)
+	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment

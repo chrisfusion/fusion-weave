@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/security"
 )
 
 // ChainLabel and StepLabel are the immutable selector labels applied to
@@ -26,9 +27,12 @@ const (
 // Build constructs an apps/v1 Deployment for a deploy-kind step.
 // The Deployment is owned by the WeaveChain (not the WeaveRun) so it persists
 // across runs. The caller must set the OwnerReference.
+// sec carries operator-wide security defaults applied to the pod template and
+// all containers (including the code-loader init container when present).
 func Build(
 	tmpl *weavev1alpha1.WeaveServiceTemplate,
 	chainName, stepName, namespace string,
+	sec security.Defaults,
 ) *appsv1.Deployment {
 	name := DeploymentName(chainName, stepName)
 	labels := map[string]string{
@@ -85,20 +89,22 @@ func Build(
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "weave-code", MountPath: mountPath},
 			},
+			SecurityContext: sec.ContainerSecurityContext,
 		})
 	}
 
 	container := corev1.Container{
-		Name:           "service",
-		Image:          tmpl.Spec.Image,
-		Command:        tmpl.Spec.Command,
-		Args:           tmpl.Spec.Args,
-		Env:            tmpl.Spec.Env,
-		Resources:      tmpl.Spec.Resources,
-		VolumeMounts:   mounts,
-		LivenessProbe:  tmpl.Spec.LivenessProbe,
-		ReadinessProbe: tmpl.Spec.ReadinessProbe,
-		StartupProbe:   tmpl.Spec.StartupProbe,
+		Name:            "service",
+		Image:           tmpl.Spec.Image,
+		Command:         tmpl.Spec.Command,
+		Args:            tmpl.Spec.Args,
+		Env:             tmpl.Spec.Env,
+		Resources:       tmpl.Spec.Resources,
+		VolumeMounts:    mounts,
+		LivenessProbe:   tmpl.Spec.LivenessProbe,
+		ReadinessProbe:  tmpl.Spec.ReadinessProbe,
+		StartupProbe:    tmpl.Spec.StartupProbe,
+		SecurityContext: sec.ContainerSecurityContext,
 	}
 
 	for _, p := range tmpl.Spec.Ports {
@@ -107,6 +113,22 @@ func Build(
 			ContainerPort: effectiveTargetPort(p),
 			Protocol:      p.Protocol,
 		})
+	}
+
+	podLabels := make(map[string]string, len(labels)+len(sec.PodLabels))
+	for k, v := range sec.PodLabels {
+		podLabels[k] = v
+	}
+	for k, v := range labels {
+		podLabels[k] = v
+	}
+
+	var podAnnotations map[string]string
+	if len(sec.PodAnnotations) > 0 {
+		podAnnotations = make(map[string]string, len(sec.PodAnnotations))
+		for k, v := range sec.PodAnnotations {
+			podAnnotations[k] = v
+		}
 	}
 
 	return &appsv1.Deployment{
@@ -126,10 +148,12 @@ func Build(
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+					Labels:      podLabels,
+					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: tmpl.Spec.ServiceAccountName,
+					SecurityContext:    sec.PodSecurityContext,
 					InitContainers:     initContainers,
 					Containers:         []corev1.Container{container},
 					Volumes:            volumes,
