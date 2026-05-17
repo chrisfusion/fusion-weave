@@ -10,7 +10,7 @@ namespaceCreate: true
 
 image:
   repository: ghcr.io/chrisfusion/fusion-weave-operator
-  tag: "latest"
+  tag: "0.2.1"
   pullPolicy: IfNotPresent
 
 # Extra annotations added to the operator pod template.

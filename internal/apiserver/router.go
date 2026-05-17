@@ -36,7 +36,9 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitori
 		registerCRUD(r, "/servicetemplates", handlers.NewServiceTemplateHandler(c, cfg.Namespace))
 		registerCRUD(r, "/chains", handlers.NewChainHandler(c, cfg.Namespace))
 		registerCRUD(r, "/triggers", handlers.NewTriggerHandler(c, cfg.Namespace))
-		registerCRUD(r, "/runs", handlers.NewRunHandler(c, cfg.Namespace))
+		runHandler := handlers.NewRunHandler(c, cfg.Namespace)
+		registerCRUD(r, "/runs", runHandler)
+		r.Post("/runs/{name}/stop", runHandler.(*handlers.RunHandler).Stop)
 	})
 
 	// Monitoring API v1 — same auth/RBAC middleware; all endpoints are GET-only

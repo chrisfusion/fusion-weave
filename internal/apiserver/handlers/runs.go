@@ -106,3 +106,34 @@ func (h *RunHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// Stop patches status.phase = Stopped via the status subresource, triggering the
+// operator's deploy-cleanup finalizer while keeping the run object in history.
+func (h *RunHandler) Stop(w http.ResponseWriter, r *http.Request) {
+	name := nameFromURL(w, r)
+	if name == "" {
+		return
+	}
+	var obj weavev1alpha1.WeaveRun
+	if err := h.client.Get(r.Context(), types.NamespacedName{Namespace: h.namespace, Name: name}, &obj); err != nil {
+		handleGetErr(w, r, err)
+		return
+	}
+	if isTerminalPhase(obj.Status.Phase) {
+		writeError(w, http.StatusConflict, "run is already in a terminal state")
+		return
+	}
+	patch := client.MergeFrom(obj.DeepCopy())
+	obj.Status.Phase = weavev1alpha1.RunPhaseStopped
+	if err := h.client.Status().Patch(r.Context(), &obj, patch); err != nil {
+		internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, obj)
+}
+
+func isTerminalPhase(p weavev1alpha1.WeaveRunPhase) bool {
+	return p == weavev1alpha1.RunPhaseSucceeded ||
+		p == weavev1alpha1.RunPhaseFailed ||
+		p == weavev1alpha1.RunPhaseStopped
+}
