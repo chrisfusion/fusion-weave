@@ -134,6 +134,21 @@ type WeaveServiceTemplateSpec struct {
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 
+	// PodSecurityContext is applied at the pod level for Deployments created from
+	// this template. When set, it overrides the operator-wide workload security
+	// default entirely. Supports all corev1.PodSecurityContext fields (runAsUser,
+	// fsGroup, seccompProfile, etc.).
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+
+	// ContainerSecurityContext is applied to the service container (and the
+	// code-loader init container when codeSource is configured). When set, it
+	// overrides the operator-wide workload security default entirely. Supports all
+	// corev1.SecurityContext fields (runAsUser, runAsGroup, allowPrivilegeEscalation,
+	// capabilities, etc.).
+	// +optional
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+
 	// Replicas is the desired number of pod replicas.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=1

@@ -8,6 +8,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `podSecurityContext` and `containerSecurityContext` fields on `WeaveJobTemplateSpec` and `WeaveServiceTemplateSpec`. When set, these override the operator-wide `WORKLOAD_SECURITY_DEFAULTS` for pods/containers created from that template, allowing per-workload user configuration (e.g. `runAsUser: 101` for nginx). The init container on deploy steps with `codeSource` also inherits the template's `containerSecurityContext`.
+
+### Fixed
+- Deploy-step Deployments, Services, and Ingresses are now deleted when a WeaveRun is killed or stopped. A `weave.fusion-platform.io/deploy-cleanup` finalizer is added to any run whose chain contains deploy-kind steps; the finalizer ensures teardown runs before the run object is garbage-collected, preventing zombie pods. Succeeded runs are exempt — their Deployments survive for rolling updates by future runs on the same chain.
+
+### Added
 - Helm-configurable security contexts, annotations, and labels for all pods managed by the operator.
   - `podSecurityContext` / `containerSecurityContext` / `podAnnotations` / `podLabels` values for the operator pod.
   - `api.podSecurityContext` / `api.containerSecurityContext` / `api.podAnnotations` / `api.podLabels` values for the API server pod (independently configurable).

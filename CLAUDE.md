@@ -38,7 +38,7 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - Cron/webhook callbacks run outside the reconcile loop — use a `source.Channel` + `WatchesRawSource` to wake the reconciler, not just `storePendingFire`.
 - Map iteration in Go is non-deterministic — sort step names before writing `run.Status.Steps` to avoid spurious status diffs.
 - Both `config/rbac/role.yaml` AND `deployment/fusion-weave/templates/role.yaml` are hand-maintained — `make generate` does NOT update either; edit both manually when CRD resource names or API group change.
-- Terminal runs (Succeeded/Failed/Stopped) are skipped immediately by `isTerminal()` and never re-reconciled — to verify a controller fix, always fire a new run; existing terminal runs stay as-is.
+- Terminal runs (Succeeded/Failed/Stopped) that still hold the `weave.fusion-platform.io/deploy-cleanup` finalizer are re-reconciled once to run cleanup and remove the finalizer — then no further reconciliation. To test a controller fix, always fire a new run.
 - `dag.Advance` is called **twice** in `weaverun_controller.go`: once before the decisions loop (to get decisions) and once after (to recompute `RunComplete` using the post-decision `stepStates`). Do NOT remove the second call — without it, deploy steps cause the WeaveRun to complete immediately on first reconcile because the pre-decision states map is empty.
 
 ## Deploy / test cycle on minikube
@@ -85,8 +85,12 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - Step transitions to `StepPhaseDeployed` (non-terminal) when `Deployment.Available=True` — **not** `Succeeded`.
 - `Deployed` satisfies dependency checks (downstream steps can start once the service is up) but blocks `RunComplete` — the WeaveRun stays `Running` for the lifetime of the service.
 - Deploy step lifecycle: `Pending → Running → Deployed`; transitions to `Failed` only if the Deployment is deleted externally.
+- `RunComplete` is NEVER true while any step is `StepPhaseDeployed` (executor.go:111-119) — StopAll policy cannot kill a Deployed step; only explicit run deletion or a direct status patch to Stopped/Failed can.
+- `weave.fusion-platform.io/deploy-cleanup` finalizer is added to any WeaveRun whose chain has deploy-kind steps; on deletion or entering Stopped/Failed it deletes the Deployment + Service + Ingress and removes the `ActiveDeployments` entry before allowing GC. `doDeployTeardown` is the only code path that removes `ActiveDeployments` entries.
+- Succeeded runs are exempt from teardown — Deployments survive so future runs on the same chain can rolling-update them.
 - WeaveChain controller monitors health independently and auto-rollbacks after `unhealthyDuration`.
 - After changing `WeaveStepPhase` enum (e.g. adding `Deployed`): run `make generate`, then `kubectl apply -f config/crd/bases/` — cluster rejects status patches with unknown enum values until CRDs are updated.
+- `podSecurityContext` / `containerSecurityContext` on `WeaveJobTemplateSpec` and `WeaveServiceTemplateSpec` override the global `WORKLOAD_SECURITY_DEFAULTS` for that template's pods. Builder pattern: compute `podSC`/`containerSC` variables at the top of the builder function (`if tmpl.Spec.X != nil { use tmpl } else { use sec }`), then reference the variable in the struct literal. `containerSecurityContext` applies to both the main container and the `code-loader` init container on deploy steps.
 - `spec.codeSource` on WeaveServiceTemplate injects a `code-loader` init container: resolves a fusion-index artifact tag → version, downloads the archive, unpacks to `codeSource.mountPath` (default `/weave-code`) on every pod start. Tracks state in `WeaveChain.Status.ActiveDeployments[*].CodeSource*` fields.
 - `fusion-platform.io/reload-deploy-step: <stepName>@<version>` annotation on WeaveChain — one-shot rolling-restart trigger for code-source steps; consumed by `handleCodeReload` in chain controller. External callers (CI/CD, REST API, webhook) set this annotation; the internal polling loop calls `triggerCodeReload` directly without going through the annotation.
 - `CODE_SOURCE_POLL_INTERVAL` operator env var — how often the chain controller polls fusion-index for tag changes (default `60s`); set in `cmd/main.go`, stored on `WeaveChainReconciler.CodeSourcePollInterval`.

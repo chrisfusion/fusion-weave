@@ -40,6 +40,16 @@ func Build(
 		StepLabel:  stepName,
 	}
 
+	// Resolve effective security contexts: template fields override global defaults.
+	podSC := sec.PodSecurityContext
+	if tmpl.Spec.PodSecurityContext != nil {
+		podSC = tmpl.Spec.PodSecurityContext
+	}
+	containerSC := sec.ContainerSecurityContext
+	if tmpl.Spec.ContainerSecurityContext != nil {
+		containerSC = tmpl.Spec.ContainerSecurityContext
+	}
+
 	replicas := tmpl.Spec.Replicas
 	if replicas == 0 {
 		replicas = 1
@@ -89,7 +99,7 @@ func Build(
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "weave-code", MountPath: mountPath},
 			},
-			SecurityContext: sec.ContainerSecurityContext,
+			SecurityContext: containerSC,
 		})
 	}
 
@@ -104,7 +114,7 @@ func Build(
 		LivenessProbe:   tmpl.Spec.LivenessProbe,
 		ReadinessProbe:  tmpl.Spec.ReadinessProbe,
 		StartupProbe:    tmpl.Spec.StartupProbe,
-		SecurityContext: sec.ContainerSecurityContext,
+		SecurityContext: containerSC,
 	}
 
 	for _, p := range tmpl.Spec.Ports {
@@ -153,7 +163,7 @@ func Build(
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: tmpl.Spec.ServiceAccountName,
-					SecurityContext:    sec.PodSecurityContext,
+					SecurityContext:    podSC,
 					InitContainers:     initContainers,
 					Containers:         []corev1.Container{container},
 					Volumes:            volumes,

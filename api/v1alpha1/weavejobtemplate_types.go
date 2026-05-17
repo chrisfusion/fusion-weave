@@ -54,6 +54,20 @@ type WeaveJobTemplateSpec struct {
 	// ServiceAccountName is the pod service account to use.
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
+	// PodSecurityContext is applied at the pod level for jobs created from this
+	// template. When set, it overrides the operator-wide workload security default
+	// entirely. Supports all corev1.PodSecurityContext fields (runAsUser, fsGroup,
+	// seccompProfile, etc.).
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+
+	// ContainerSecurityContext is applied to the job container created from this
+	// template. When set, it overrides the operator-wide workload security default
+	// entirely. Supports all corev1.SecurityContext fields (runAsUser, runAsGroup,
+	// allowPrivilegeEscalation, capabilities, etc.).
+	// +optional
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
 }
 
 // WeaveVolumeMount describes a secret or configmap mounted into the container.

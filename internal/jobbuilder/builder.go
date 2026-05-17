@@ -123,6 +123,16 @@ func Build(
 		})
 	}
 
+	// Resolve effective security contexts: template fields override global defaults.
+	podSC := sec.PodSecurityContext
+	if template.Spec.PodSecurityContext != nil {
+		podSC = template.Spec.PodSecurityContext
+	}
+	containerSC := sec.ContainerSecurityContext
+	if template.Spec.ContainerSecurityContext != nil {
+		containerSC = template.Spec.ContainerSecurityContext
+	}
+
 	parallelism := template.Spec.Parallelism
 	completions := template.Spec.Completions
 
@@ -168,7 +178,7 @@ func Build(
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
 					ServiceAccountName: template.Spec.ServiceAccountName,
-					SecurityContext:    sec.PodSecurityContext,
+					SecurityContext:    podSC,
 					Containers: []corev1.Container{
 						{
 							Name:            "job",
@@ -178,7 +188,7 @@ func Build(
 							Env:             env,
 							Resources:       template.Spec.Resources,
 							VolumeMounts:    mounts,
-							SecurityContext: sec.ContainerSecurityContext,
+							SecurityContext: containerSC,
 						},
 					},
 					Volumes: volumes,

@@ -24,6 +24,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -37,6 +38,11 @@ import (
 )
 
 const annotationRestartStep = "fusion-platform.io/restart-step"
+
+// finalizerDeployCleanup is added to any WeaveRun whose chain contains deploy-kind
+// steps. It ensures the Reconciler can delete the Deployment/Service/Ingress before
+// Kubernetes GC removes the WeaveRun object.
+const finalizerDeployCleanup = "weave.fusion-platform.io/deploy-cleanup"
 
 // weaveRunGVK is the GVK used when constructing owner references.
 // r.Get zeroes out TypeMeta on returned objects, so we set it explicitly.
@@ -76,8 +82,25 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// C1 fix: capture the patch base immediately after Get, before any mutation.
 	base := client.MergeFrom(run.DeepCopy())
 
-	// Terminal runs need no further action.
+	// Handle deletion: clean up deploy-step resources before allowing GC.
+	if !run.DeletionTimestamp.IsZero() {
+		return r.handleRunDeletion(ctx, &run)
+	}
+
+	// Terminal runs: clean up any lingering deploy steps (handles direct status-patch
+	// kills), then remove the finalizer so the run can be freely deleted.
 	if isTerminal(run.Status.Phase) {
+		if controllerutil.ContainsFinalizer(&run, finalizerDeployCleanup) {
+			if run.Status.Phase != weavev1alpha1.RunPhaseSucceeded {
+				if err := r.doDeployTeardown(ctx, &run); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+			controllerutil.RemoveFinalizer(&run, finalizerDeployCleanup)
+			if err := r.Update(ctx, &run); err != nil {
+				return ctrl.Result{}, fmt.Errorf("remove deploy-cleanup finalizer: %w", err)
+			}
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -110,6 +133,21 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		Namespace: run.Namespace, Name: run.Spec.ChainRef.Name,
 	}, &chain); err != nil {
 		return ctrl.Result{}, fmt.Errorf("get chain: %w", err)
+	}
+
+	// Add the deploy-cleanup finalizer as soon as we confirm the chain has deploy
+	// steps. Must happen before any Deployment is created so deletion is always
+	// handled cleanly. Requeue after the Update so base is recaptured fresh.
+	if !controllerutil.ContainsFinalizer(&run, finalizerDeployCleanup) {
+		for _, step := range chain.Spec.Steps {
+			if step.StepKind == weavev1alpha1.StepKindDeploy {
+				controllerutil.AddFinalizer(&run, finalizerDeployCleanup)
+				if err := r.Update(ctx, &run); err != nil {
+					return ctrl.Result{}, fmt.Errorf("add deploy-cleanup finalizer: %w", err)
+				}
+				return ctrl.Result{Requeue: true}, nil
+			}
+		}
 	}
 
 	// Provision the per-run shared PVC when the chain requests shared storage
@@ -882,6 +920,88 @@ func (r *WeaveRunReconciler) handleRestartStep(ctx context.Context, run *weavev1
 
 	log.FromContext(ctx).Info("rolling restart triggered", "step", stepName, "deployment", ss.DeploymentRef.Name)
 	return true, nil
+}
+
+// handleRunDeletion is called when the WeaveRun has a non-zero DeletionTimestamp.
+// It tears down deploy-step resources (Deployment, Service, Ingress) and removes
+// the deploy-cleanup finalizer so Kubernetes GC can complete the deletion.
+// Succeeded runs are exempt: their Deployments are preserved for rolling updates
+// by future runs on the same chain.
+func (r *WeaveRunReconciler) handleRunDeletion(ctx context.Context, run *weavev1alpha1.WeaveRun) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(run, finalizerDeployCleanup) {
+		return ctrl.Result{}, nil
+	}
+	if run.Status.Phase != weavev1alpha1.RunPhaseSucceeded {
+		if err := r.doDeployTeardown(ctx, run); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	controllerutil.RemoveFinalizer(run, finalizerDeployCleanup)
+	if err := r.Update(ctx, run); err != nil {
+		return ctrl.Result{}, fmt.Errorf("remove deploy-cleanup finalizer on deletion: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// doDeployTeardown deletes the Deployment, Service, and Ingress for every
+// deploy-kind step recorded in the run's status, and removes the corresponding
+// entries from WeaveChain.Status.ActiveDeployments. All deletes tolerate
+// not-found errors so the function is safe to call multiple times.
+func (r *WeaveRunReconciler) doDeployTeardown(ctx context.Context, run *weavev1alpha1.WeaveRun) error {
+	logger := log.FromContext(ctx)
+
+	var chain weavev1alpha1.WeaveChain
+	chainFound := true
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: run.Namespace, Name: run.Spec.ChainRef.Name,
+	}, &chain); err != nil {
+		if !errors.IsNotFound(err) {
+			return fmt.Errorf("get chain for deploy teardown: %w", err)
+		}
+		chainFound = false
+	}
+
+	chainPatch := client.MergeFrom(chain.DeepCopy())
+	activeDeployChanged := false
+
+	for _, ss := range run.Status.Steps {
+		if ss.DeploymentRef == nil {
+			continue
+		}
+		name := ss.DeploymentRef.Name
+		ns := run.Namespace
+
+		deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+		if err := r.Delete(ctx, deploy); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("delete deployment %q: %w", name, err)
+		}
+		logger.Info("deleted deploy-step Deployment", "deployment", name)
+
+		svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+		if err := r.Delete(ctx, svc); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("delete service %q: %w", name, err)
+		}
+
+		ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+		if err := r.Delete(ctx, ing); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("delete ingress %q: %w", name, err)
+		}
+
+		if chainFound {
+			if _, ok := chain.Status.ActiveDeployments[name]; ok {
+				delete(chain.Status.ActiveDeployments, name)
+				activeDeployChanged = true
+			}
+		}
+	}
+
+	if activeDeployChanged {
+		if err := r.Status().Patch(ctx, &chain, chainPatch); err != nil {
+			return fmt.Errorf("patch chain status after deploy teardown: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func isTerminal(phase weavev1alpha1.WeaveRunPhase) bool {
