@@ -12,8 +12,8 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	apimiddleware "fusion-platform.io/fusion-weave/internal/apiserver/middleware"
 	"fusion-platform.io/fusion-weave/internal/monitoring/cache"
 	"fusion-platform.io/fusion-weave/internal/monitoring/logsink"
 )
@@ -64,8 +64,9 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, apiError{Code: status, Message: msg})
 }
 
-func internalError(w http.ResponseWriter, r *http.Request, err error) {
-	log.FromContext(r.Context()).WithName("monitor").Error(err, "kubernetes operation failed")
+func internalError(w http.ResponseWriter, r *http.Request, err error, fields ...any) {
+	apimiddleware.LoggerFromCtx(r.Context()).Error("kubernetes operation failed",
+		append([]any{"error", err}, fields...)...)
 	writeError(w, http.StatusInternalServerError, "internal server error")
 }
 

@@ -156,7 +156,7 @@ func (r *WeaveTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("patch status: %w", err)
 	}
 
-	logger.Info("WeaveTrigger reconciled", "type", ft.Spec.Type)
+	logger.Info("WeaveTrigger reconciled", "trigger", ft.Name, "chain", ft.Spec.ChainRef.Name, "type", ft.Spec.Type)
 	return ctrl.Result{}, nil
 }
 

@@ -524,13 +524,13 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		run.Status.CompletionTime = &now
 		if advancement.RunSucceeded {
 			run.Status.Phase = weavev1alpha1.RunPhaseSucceeded
-			logger.Info("WeaveRun succeeded")
+			logger.Info("WeaveRun phase transition", "run", run.Name, "phase", "Succeeded")
 		} else if chain.Spec.FailurePolicy == weavev1alpha1.FailurePolicyStopAll {
 			run.Status.Phase = weavev1alpha1.RunPhaseStopped
-			logger.Info("WeaveRun stopped by StopAll policy")
+			logger.Info("WeaveRun phase transition", "run", run.Name, "phase", "Stopped")
 		} else {
 			run.Status.Phase = weavev1alpha1.RunPhaseFailed
-			logger.Info("WeaveRun failed")
+			logger.Info("WeaveRun phase transition", "run", run.Name, "phase", "Failed")
 		}
 	}
 

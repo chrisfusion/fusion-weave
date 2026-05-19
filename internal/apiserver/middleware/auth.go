@@ -6,7 +6,9 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 
 	"fusion-platform.io/fusion-weave/internal/apiserver/auth"
@@ -30,19 +32,28 @@ func Auth(cfg auth.Config) func(http.Handler) http.Handler {
 				authenticator, initErr = auth.New(context.Background(), cfg)
 			})
 			if initErr != nil {
+				slog.Error("auth init failed", "error", initErr)
 				writeMiddlewareError(w, http.StatusServiceUnavailable, "auth service unavailable")
 				return
 			}
 
 			result, err := authenticator.Authenticate(r.Context(), r.Header.Get("Authorization"))
 			if err != nil {
+				LoggerFromCtx(r.Context()).Error("auth error", "error", err)
 				writeMiddlewareError(w, http.StatusInternalServerError, "authentication error")
 				return
 			}
 			if result == nil {
+				LoggerFromCtx(r.Context()).Warn("auth rejected", "reason", "no_valid_token")
 				writeMiddlewareError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
+
+			LoggerFromCtx(r.Context()).Debug("auth ok",
+				"principal", result.Principal,
+				"auth_method", authMethodFromPrincipal(result.Principal),
+				"role", string(result.Role),
+			)
 
 			ctx := context.WithValue(r.Context(), roleContextKey{}, result.Role)
 			ctx = context.WithValue(ctx, principalContextKey{}, result.Principal)
@@ -61,6 +72,20 @@ func RoleFromContext(ctx context.Context) auth.Role {
 
 type roleContextKey struct{}
 type principalContextKey struct{}
+
+// authMethodFromPrincipal extracts the auth method from the principal prefix set by validators.
+func authMethodFromPrincipal(p string) string {
+	switch {
+	case strings.HasPrefix(p, "apikey/"):
+		return "apikey"
+	case strings.HasPrefix(p, "oidc/"):
+		return "oidc"
+	case strings.HasPrefix(p, "sa/"):
+		return "sa"
+	default:
+		return "unauthenticated"
+	}
+}
 
 // writeMiddlewareError writes a JSON error response with the correct Content-Type.
 // Used by all middleware that needs to short-circuit with an error.

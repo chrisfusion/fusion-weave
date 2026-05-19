@@ -8,6 +8,7 @@ package main
 
 import (
 	"flag"
+	"log/slog"
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,6 +37,7 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	setupLogger(cfg)
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	logger := ctrl.Log.WithName("api")
 
@@ -62,9 +64,40 @@ func main() {
 	}
 
 	ctx := ctrl.SetupSignalHandler()
-	logger.Info("fusion-weave API server starting", "addr", cfg.Addr, "namespace", cfg.Namespace)
+	slog.Info("fusion-weave API server starting", "addr", cfg.Addr, "namespace", cfg.Namespace)
 	if err := srv.Start(ctx); err != nil {
-		logger.Error(err, "API server exited with error")
+		slog.Error("API server exited with error", "error", err)
 		os.Exit(1)
+	}
+}
+
+func setupLogger(cfg apiserver.Config) {
+	var level slog.Level
+	unknownLevel := false
+	switch cfg.LogLevel {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	case "info", "":
+		level = slog.LevelInfo
+	default:
+		level = slog.LevelInfo
+		unknownLevel = true
+	}
+
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	if cfg.LogFormat == "text" {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	}
+	slog.SetDefault(slog.New(handler))
+
+	if unknownLevel {
+		slog.Warn("unrecognised LOG_LEVEL, defaulting to info", "value", cfg.LogLevel)
 	}
 }

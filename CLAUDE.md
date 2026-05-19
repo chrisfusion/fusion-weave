@@ -22,6 +22,13 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - `cmd/api/main.go` — entry point for the REST API server (separate from the operator)
 - `cmd/loader/main.go` — init container entry point for codeSource deploy steps; built into operator image as `/loader`
 
+## Logging (API server)
+- Platform logging principles: `../logging_principles.md` (written for Gin, adapted here for chi).
+- HTTP layer uses `log/slog`; operator controllers keep `logr/zap` from controller-runtime — both coexist in the same binary.
+- Call-site interface in handlers: `middleware.LoggerFromCtx(r.Context())` — carries `request_id` and request context. Use `slog.Default()` for background/startup code outside a request.
+- `LOG_LEVEL` / `LOG_FORMAT` env vars control the slog handler; wired via `api.log.level` / `api.log.format` in Helm.
+- `internal/monitoring/handlers` intentionally imports `internal/apiserver/middleware` for `LoggerFromCtx` — no import cycle.
+
 ## Build
 - `go build ./...` — standard build
 - `make generate` — regenerate deepcopy + CRD YAML after changing api/v1alpha1/ types (requires `~/go/bin/controller-gen`)

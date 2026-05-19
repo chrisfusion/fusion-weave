@@ -24,7 +24,7 @@ func NewJobTemplateHandler(c client.Client, namespace string) ResourceHandler {
 func (h *JobTemplateHandler) List(w http.ResponseWriter, r *http.Request) {
 	var list weavev1alpha1.WeaveJobTemplateList
 	if err := h.client.List(r.Context(), &list, client.InNamespace(h.namespace)); err != nil {
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveJobTemplate")
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -42,7 +42,7 @@ func (h *JobTemplateHandler) Create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "resource already exists")
 			return
 		}
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveJobTemplate", "name", obj.Name)
 		return
 	}
 	writeJSON(w, http.StatusCreated, obj)
@@ -78,7 +78,7 @@ func (h *JobTemplateHandler) Update(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "resource not found")
 			return
 		}
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveJobTemplate", "name", name)
 		return
 	}
 	writeJSON(w, http.StatusOK, obj)
@@ -101,7 +101,7 @@ func (h *JobTemplateHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "resource not found")
 			return
 		}
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveJobTemplate", "name", name)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

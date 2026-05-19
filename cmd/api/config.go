@@ -35,6 +35,9 @@ func configFromFlags() apiserver.Config {
 	flag.StringVar(&cfg.KafkaBrokers, "kafka-brokers", os.Getenv("KAFKA_BROKERS"), "Comma-separated Kafka broker addresses.")
 	flag.StringVar(&cfg.KafkaTopic, "kafka-topic", envOrDefault("KAFKA_TOPIC", "weave-logs"), "Kafka topic for log snapshots.")
 
+	flag.StringVar(&cfg.LogLevel, "log-level", envOrDefault("LOG_LEVEL", "info"), "Log level: debug|info|warn|error.")
+	flag.StringVar(&cfg.LogFormat, "log-format", envOrDefault("LOG_FORMAT", "json"), "Log format: json|text.")
+
 	return cfg
 }
 

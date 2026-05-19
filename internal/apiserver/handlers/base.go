@@ -12,7 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"fusion-platform.io/fusion-weave/internal/apiserver/middleware"
 )
 
 // ResourceHandler is the interface the router expects for each CRD resource.
@@ -47,10 +48,11 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, apiError{Code: status, Message: msg})
 }
 
-// internalError logs err server-side and returns a generic 500 to the caller,
-// avoiding leakage of internal Kubernetes error details.
-func internalError(w http.ResponseWriter, r *http.Request, err error) {
-	log.FromContext(r.Context()).WithName("apiserver").Error(err, "kubernetes operation failed")
+// internalError logs err with optional structured fields and returns a generic 500.
+// Pass additional slog key-value pairs (e.g. "kind","WeaveRun","name","my-run") for context.
+func internalError(w http.ResponseWriter, r *http.Request, err error, fields ...any) {
+	middleware.LoggerFromCtx(r.Context()).Error("kubernetes operation failed",
+		append([]any{"error", err}, fields...)...)
 	writeError(w, http.StatusInternalServerError, "internal server error")
 }
 
@@ -97,7 +99,7 @@ func (b *base) mergePatch(w http.ResponseWriter, r *http.Request, obj client.Obj
 		return
 	}
 	if err := b.client.Patch(r.Context(), obj, client.RawPatch(types.MergePatchType, patchBytes)); err != nil {
-		internalError(w, r, err)
+		internalError(w, r, err, "name", name)
 		return
 	}
 	writeJSON(w, http.StatusOK, obj)

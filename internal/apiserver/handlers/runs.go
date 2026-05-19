@@ -24,7 +24,7 @@ func NewRunHandler(c client.Client, namespace string) ResourceHandler {
 func (h *RunHandler) List(w http.ResponseWriter, r *http.Request) {
 	var list weavev1alpha1.WeaveRunList
 	if err := h.client.List(r.Context(), &list, client.InNamespace(h.namespace)); err != nil {
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveRun")
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -42,7 +42,7 @@ func (h *RunHandler) Create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "resource already exists")
 			return
 		}
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveRun", "name", obj.Name)
 		return
 	}
 	writeJSON(w, http.StatusCreated, obj)
@@ -78,7 +78,7 @@ func (h *RunHandler) Update(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "resource not found")
 			return
 		}
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveRun", "name", name)
 		return
 	}
 	writeJSON(w, http.StatusOK, obj)
@@ -101,7 +101,7 @@ func (h *RunHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "resource not found")
 			return
 		}
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveRun", "name", name)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -126,7 +126,7 @@ func (h *RunHandler) Stop(w http.ResponseWriter, r *http.Request) {
 	patch := client.MergeFrom(obj.DeepCopy())
 	obj.Status.Phase = weavev1alpha1.RunPhaseStopped
 	if err := h.client.Status().Patch(r.Context(), &obj, patch); err != nil {
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveRun", "name", name)
 		return
 	}
 	writeJSON(w, http.StatusOK, obj)

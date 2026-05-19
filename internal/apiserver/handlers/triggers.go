@@ -24,7 +24,7 @@ func NewTriggerHandler(c client.Client, namespace string) ResourceHandler {
 func (h *TriggerHandler) List(w http.ResponseWriter, r *http.Request) {
 	var list weavev1alpha1.WeaveTriggerList
 	if err := h.client.List(r.Context(), &list, client.InNamespace(h.namespace)); err != nil {
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveTrigger")
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -42,7 +42,7 @@ func (h *TriggerHandler) Create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "resource already exists")
 			return
 		}
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveTrigger", "name", obj.Name)
 		return
 	}
 	writeJSON(w, http.StatusCreated, obj)
@@ -78,7 +78,7 @@ func (h *TriggerHandler) Update(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "resource not found")
 			return
 		}
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveTrigger", "name", name)
 		return
 	}
 	writeJSON(w, http.StatusOK, obj)
@@ -101,7 +101,7 @@ func (h *TriggerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "resource not found")
 			return
 		}
-		internalError(w, r, err)
+		internalError(w, r, err, "kind", "WeaveTrigger", "name", name)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

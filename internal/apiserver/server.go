@@ -60,6 +60,11 @@ type Config struct {
 	KafkaBrokers string
 	// KafkaTopic is the Kafka topic for log snapshots.
 	KafkaTopic string
+
+	// LogLevel is the minimum log level for the HTTP layer: "debug"|"info"|"warn"|"error".
+	LogLevel string
+	// LogFormat controls output format: "json"|"text".
+	LogFormat string
 }
 
 // Server is the REST API HTTP server.

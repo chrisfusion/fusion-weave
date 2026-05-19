@@ -143,6 +143,12 @@ api:
       brokers: ""
       topic: "weave-logs"
 
+  log:
+    # Minimum log level for the API HTTP layer: debug | info | warn | error
+    level: "info"
+    # Log output format: json | text  (json is default for Kubernetes log collectors)
+    format: "json"
+
 # Security defaults applied to every pod the operator creates at runtime —
 # both batch Job pods (job steps) and Deployment pods (deploy steps).
 # These are separate from the operator/API pod security configured above.

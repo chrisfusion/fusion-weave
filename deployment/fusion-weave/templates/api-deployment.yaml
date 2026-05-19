@@ -71,6 +71,10 @@ spec:
             - name: KAFKA_TOPIC
               value: {{ .Values.api.monitoring.kafka.topic | quote }}
             {{- end }}
+            - name: LOG_LEVEL
+              value: {{ .Values.api.log.level | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.api.log.format | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.api.service.port }}

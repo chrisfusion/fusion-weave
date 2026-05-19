@@ -8,6 +8,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Structured HTTP access logging via `log/slog` with per-request `request_id` correlation; every request emits one INFO line with method, path, client IP, status, and latency.
+- Auth decision logging in the Auth middleware: DEBUG on success with principal, auth_method (apikey/oidc/sa/unauthenticated), and role; WARN on rejected requests; ERROR on internal auth failures.
+- Resource context fields (`kind`, `name`) on all Kubernetes operation error logs in API handlers, making 500 errors directly queryable by resource.
+- `LOG_LEVEL` env var (debug|info|warn|error, default info) and `LOG_FORMAT` env var (json|text, default json) for the API server HTTP layer, wired through Helm as `api.log.level` and `api.log.format`.
+- Operator controller phase-transition logs now include `run` and `phase` fields for structured querying; trigger reconciliation logs include `trigger` and `chain` fields.
+
+### Added
 - `podSecurityContext` and `containerSecurityContext` fields on `WeaveJobTemplateSpec` and `WeaveServiceTemplateSpec`. When set, these override the operator-wide `WORKLOAD_SECURITY_DEFAULTS` for pods/containers created from that template, allowing per-workload user configuration (e.g. `runAsUser: 101` for nginx). The init container on deploy steps with `codeSource` also inherits the template's `containerSecurityContext`.
 
 ### Fixed
