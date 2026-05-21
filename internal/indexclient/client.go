@@ -11,8 +11,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 // ErrNotFound is returned when the artifact or tag does not exist in fusion-index.
@@ -75,6 +80,156 @@ func findArtifactID(ctx context.Context, baseURL, artifactName string) (int64, e
 		return item.ID, nil
 	}
 	return 0, ErrNotFound
+}
+
+// AppRunnerArg is a single named argument for an app runner (from metadata.yaml).
+type AppRunnerArg struct {
+	Name  string
+	Value string
+}
+
+// AppRunner holds runner configuration parsed from an artifact's metadata.yaml.
+type AppRunner struct {
+	Type string
+	Port int32
+	Args map[string]string
+}
+
+// AppIngress holds ingress configuration parsed from an artifact's metadata.yaml.
+type AppIngress struct {
+	PathPrefix string
+}
+
+// AppMetadata is the subset of metadata.yaml fields the operator uses at runtime.
+// Name and version are intentionally absent — those come from fusion-index directly.
+type AppMetadata struct {
+	Runner    AppRunner
+	Ingress   AppIngress
+	Resources corev1.ResourceRequirements
+}
+
+// rawMetadata mirrors the metadata.yaml structure for JSON/YAML unmarshalling.
+type rawMetadata struct {
+	Runner struct {
+		Type string            `yaml:"type" json:"type"`
+		Port int32             `yaml:"port" json:"port"`
+		Args map[string]string `yaml:"args" json:"args"`
+	} `yaml:"runner" json:"runner"`
+	Ingress struct {
+		PathPrefix string `yaml:"pathPrefix" json:"pathPrefix"`
+	} `yaml:"ingress" json:"ingress"`
+	Resources struct {
+		Requests map[string]string `yaml:"requests" json:"requests"`
+		Limits   map[string]string `yaml:"limits" json:"limits"`
+	} `yaml:"resources" json:"resources"`
+}
+
+// FetchAppMetadata resolves artifactName@tag in fusion-index, downloads the
+// metadata.yaml file attached to that version, and returns the parsed AppMetadata.
+// Name and version are not returned — callers must use ResolveTag for the version.
+func FetchAppMetadata(ctx context.Context, baseURL, artifactName, tag string) (*AppMetadata, error) {
+	id, err := findArtifactID(ctx, baseURL, artifactName)
+	if err != nil {
+		return nil, err
+	}
+	version, err := resolveTagForID(ctx, baseURL, id, tag)
+	if err != nil {
+		return nil, err
+	}
+	return fetchMetadataForVersion(ctx, baseURL, id, version)
+}
+
+func fetchMetadataForVersion(ctx context.Context, baseURL string, artifactID int64, version string) (*AppMetadata, error) {
+	u := fmt.Sprintf("%s/api/v1/artifacts/%d/versions/%s/files", baseURL, artifactID, version)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("indexclient: build request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("indexclient: GET files: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("indexclient: GET files: unexpected status %d", resp.StatusCode)
+	}
+
+	var files []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+		return nil, fmt.Errorf("indexclient: decode files: %w", err)
+	}
+
+	for _, f := range files {
+		if f.Name != "metadata.yaml" {
+			continue
+		}
+		data, dlErr := downloadFileBytes(ctx, baseURL, artifactID, version, f.ID)
+		if dlErr != nil {
+			return nil, dlErr
+		}
+		return parseMetadata(data)
+	}
+	return nil, fmt.Errorf("indexclient: metadata.yaml not found for artifact %d version %s", artifactID, version)
+}
+
+func downloadFileBytes(ctx context.Context, baseURL string, artifactID int64, version string, fileID int64) ([]byte, error) {
+	u := fmt.Sprintf("%s/api/v1/artifacts/%d/versions/%s/files/%d/download", baseURL, artifactID, version, fileID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("indexclient: build download request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("indexclient: download file: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("indexclient: download file: unexpected status %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func parseMetadata(data []byte) (*AppMetadata, error) {
+	var raw rawMetadata
+	if err := sigsyaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("indexclient: parse metadata.yaml: %w", err)
+	}
+
+	meta := &AppMetadata{
+		Runner: AppRunner{
+			Type: raw.Runner.Type,
+			Port: raw.Runner.Port,
+			Args: raw.Runner.Args,
+		},
+		Ingress: AppIngress{
+			PathPrefix: raw.Ingress.PathPrefix,
+		},
+	}
+
+	requests := corev1.ResourceList{}
+	for k, v := range raw.Resources.Requests {
+		qty, err := resource.ParseQuantity(v)
+		if err == nil {
+			requests[corev1.ResourceName(k)] = qty
+		}
+	}
+	limits := corev1.ResourceList{}
+	for k, v := range raw.Resources.Limits {
+		qty, err := resource.ParseQuantity(v)
+		if err == nil {
+			limits[corev1.ResourceName(k)] = qty
+		}
+	}
+	if len(requests) > 0 || len(limits) > 0 {
+		meta.Resources = corev1.ResourceRequirements{
+			Requests: requests,
+			Limits:   limits,
+		}
+	}
+	return meta, nil
 }
 
 func resolveTagForID(ctx context.Context, baseURL string, artifactID int64, tag string) (string, error) {

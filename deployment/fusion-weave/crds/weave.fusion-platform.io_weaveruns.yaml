@@ -190,6 +190,51 @@ spec:
                   - name
                   type: object
                 type: array
+              stepOverrides:
+                description: |-
+                  StepOverrides provides per-step deployment parameters for deploy-kind steps.
+                  When a step is listed here the Deployment is named <runName>-<stepName> and
+                  owned by the WeaveRun; runner configuration is read from the artifact's
+                  metadata.yaml in fusion-index instead of from the WeaveServiceTemplate.
+                  Non-override runs are unaffected.
+                items:
+                  description: |-
+                    WeaveRunStepOverride provides per-step deployment parameters for a single
+                    deploy-kind step. When present the operator fetches runner configuration
+                    from the artifact's metadata.yaml in fusion-index rather than from the
+                    WeaveServiceTemplate, and names the Deployment <runName>-<stepName> so
+                    multiple runs can share the same chain without colliding.
+                  properties:
+                    artifactName:
+                      description: ArtifactName is the full artifact name in fusion-index
+                        (e.g. "app.my-service").
+                      minLength: 1
+                      type: string
+                    indexURL:
+                      default: http://fusion-index-backend.fusion.svc.cluster.local:8080
+                      description: IndexURL is the fusion-index base URL used to resolve
+                        the artifact.
+                      type: string
+                    ingressHost:
+                      description: |-
+                        IngressHost is the fully-qualified domain name for this service instance
+                        (e.g. "my-service.example.com"). Required when the chain step uses an Ingress.
+                      type: string
+                    stepName:
+                      description: StepName is the name of the deploy-kind step in
+                        the chain to override.
+                      minLength: 1
+                      type: string
+                    tag:
+                      description: Tag is the mutable tag to track (e.g. "stable").
+                      minLength: 1
+                      type: string
+                  required:
+                  - artifactName
+                  - stepName
+                  - tag
+                  type: object
+                type: array
               triggerRef:
                 description: TriggerRef identifies the WeaveTrigger that created this
                   run, if any.
@@ -211,6 +256,81 @@ spec:
           status:
             description: WeaveRunStatus reflects the live execution state of the run.
             properties:
+              activeDeployments:
+                additionalProperties:
+                  description: WeaveActiveDeploymentStatus tracks the health of a
+                    Deployment created by a deploy step.
+                  properties:
+                    codeSourceArtifact:
+                      description: |-
+                        CodeSourceArtifact is the fusion-index artifact name tracked by this deployment.
+                        Empty when the step has no codeSource.
+                      type: string
+                    codeSourceDeployedVersion:
+                      description: |-
+                        CodeSourceDeployedVersion is the artifact version currently loaded in running pods.
+                        Updated each time a rolling restart is triggered by a code-source change.
+                      type: string
+                    codeSourceIndexURL:
+                      description: CodeSourceIndexURL is the fusion-index base URL
+                        used for polling.
+                      type: string
+                    codeSourceTag:
+                      description: CodeSourceTag is the mutable tag being tracked
+                        (e.g. "stable").
+                      type: string
+                    currentRevision:
+                      description: CurrentRevision is the Deployment revision currently
+                        running.
+                      type: string
+                    deploymentName:
+                      description: DeploymentName is the name of the managed Deployment.
+                      type: string
+                    health:
+                      description: Health is the current health phase of the Deployment.
+                      enum:
+                      - Healthy
+                      - Unhealthy
+                      - RollingBack
+                      - RolledBack
+                      - Unknown
+                      type: string
+                    lastRollbackRevision:
+                      description: LastRollbackRevision is the revision rolled back
+                        to (set after a rollback).
+                      type: string
+                    lastRollbackTime:
+                      description: LastRollbackTime is when the most recent rollback
+                        was triggered.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is a human-readable status detail.
+                      type: string
+                    stepName:
+                      description: StepName is the chain step that owns this Deployment.
+                      type: string
+                    unhealthyDurationSeconds:
+                      description: |-
+                        UnhealthyDurationSeconds is the unhealthyDuration from the template at
+                        registration time, cached here to avoid a lookup in the health loop.
+                      format: int64
+                      type: integer
+                    unhealthySince:
+                      description: UnhealthySince is when the Deployment first entered
+                        an unhealthy state.
+                      format: date-time
+                      type: string
+                  required:
+                  - deploymentName
+                  - health
+                  - stepName
+                  type: object
+                description: |-
+                  ActiveDeployments tracks run-owned Deployments created via StepOverrides.
+                  The map key is the Deployment name (<runName>-<stepName>). Health monitoring
+                  and code-source polling for these entries are handled by the run controller.
+                type: object
               completionTime:
                 description: CompletionTime is when the run reached a terminal phase.
                 format: date-time

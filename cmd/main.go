@@ -145,10 +145,11 @@ func main() {
 	}
 
 	if err := (&controller.WeaveRunReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		KubeClient:       kubeClient,
-		SecurityDefaults: securityDefaults,
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		KubeClient:             kubeClient,
+		SecurityDefaults:       securityDefaults,
+		CodeSourcePollInterval: codePollInterval,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveRun controller")
 		os.Exit(1)

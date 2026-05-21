@@ -41,25 +41,28 @@ func main() {
 		fatalf("find artifact: %v", err)
 	}
 
-	version, fileID, fileName, err := resolveTagToFile(indexURL, artifactID, artifactTag)
+	version, files, err := resolveTagToFiles(indexURL, artifactID, artifactTag)
 	if err != nil {
 		fatalf("resolve tag: %v", err)
 	}
-	fmt.Printf("loader: downloading version %s (file %d: %s)\n", version, fileID, fileName)
-
-	data, err := downloadFile(indexURL, artifactID, version, fileID)
-	if err != nil {
-		fatalf("download: %v", err)
-	}
+	fmt.Printf("loader: downloading version %s (%d file(s))\n", version, len(files))
 
 	if err := os.MkdirAll(mountPath, 0755); err != nil {
 		fatalf("mkdir %s: %v", mountPath, err)
 	}
 
-	if err := unpack(data, fileName, mountPath); err != nil {
-		fatalf("unpack: %v", err)
+	for _, f := range files {
+		data, err := downloadFile(indexURL, artifactID, version, f.ID)
+		if err != nil {
+			fatalf("download %s: %v", f.Name, err)
+		}
+		if err := unpack(data, f.Name, mountPath); err != nil {
+			fatalf("unpack %s: %v", f.Name, err)
+		}
+		fmt.Printf("loader: installed %s\n", f.Name)
 	}
 
+	// Write .version from the index-resolved semver — not from metadata.yaml content.
 	versionFile := filepath.Join(mountPath, ".version")
 	if err := os.WriteFile(versionFile, []byte(version), 0644); err != nil {
 		fatalf("write .version: %v", err)
@@ -106,7 +109,7 @@ func findArtifactID(baseURL, artifactName string) (int64, error) {
 	return 0, fmt.Errorf("artifact %q not found", artifactName)
 }
 
-func resolveTagToFile(baseURL string, artifactID int64, tag string) (version string, fileID int64, fileName string, err error) {
+func resolveTagToFiles(baseURL string, artifactID int64, tag string) (version string, files []fileItem, err error) {
 	u := fmt.Sprintf("%s/api/v1/artifacts/%d/versions", baseURL, artifactID)
 	var versions []versionItem
 	if err = getJSON(u, &versions); err != nil {
@@ -116,25 +119,19 @@ func resolveTagToFile(baseURL string, artifactID int64, tag string) (version str
 		for _, t := range v.Tags {
 			if t.Tag == tag {
 				version = fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
-				fileID, fileName, err = firstFile(baseURL, artifactID, version)
+				fu := fmt.Sprintf("%s/api/v1/artifacts/%d/versions/%s/files", baseURL, artifactID, version)
+				if err = getJSON(fu, &files); err != nil {
+					return
+				}
+				if len(files) == 0 {
+					err = fmt.Errorf("no files for artifact %d version %s", artifactID, version)
+				}
 				return
 			}
 		}
 	}
 	err = fmt.Errorf("tag %q not found for artifact %d", tag, artifactID)
 	return
-}
-
-func firstFile(baseURL string, artifactID int64, version string) (int64, string, error) {
-	u := fmt.Sprintf("%s/api/v1/artifacts/%d/versions/%s/files", baseURL, artifactID, version)
-	var files []fileItem
-	if err := getJSON(u, &files); err != nil {
-		return 0, "", err
-	}
-	for _, f := range files {
-		return f.ID, f.Name, nil
-	}
-	return 0, "", fmt.Errorf("no files for artifact %d version %s", artifactID, version)
 }
 
 func downloadFile(baseURL string, artifactID int64, version string, fileID int64) ([]byte, error) {

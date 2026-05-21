@@ -93,6 +93,35 @@ type WeaveRunStepStatus struct {
 	DeploymentRef *corev1.LocalObjectReference `json:"deploymentRef,omitempty"`
 }
 
+// WeaveRunStepOverride provides per-step deployment parameters for a single
+// deploy-kind step. When present the operator fetches runner configuration
+// from the artifact's metadata.yaml in fusion-index rather than from the
+// WeaveServiceTemplate, and names the Deployment <runName>-<stepName> so
+// multiple runs can share the same chain without colliding.
+type WeaveRunStepOverride struct {
+	// StepName is the name of the deploy-kind step in the chain to override.
+	// +kubebuilder:validation:MinLength=1
+	StepName string `json:"stepName"`
+
+	// ArtifactName is the full artifact name in fusion-index (e.g. "app.my-service").
+	// +kubebuilder:validation:MinLength=1
+	ArtifactName string `json:"artifactName"`
+
+	// Tag is the mutable tag to track (e.g. "stable").
+	// +kubebuilder:validation:MinLength=1
+	Tag string `json:"tag"`
+
+	// IngressHost is the fully-qualified domain name for this service instance
+	// (e.g. "my-service.example.com"). Required when the chain step uses an Ingress.
+	// +optional
+	IngressHost string `json:"ingressHost,omitempty"`
+
+	// IndexURL is the fusion-index base URL used to resolve the artifact.
+	// +kubebuilder:default="http://fusion-index-backend.fusion.svc.cluster.local:8080"
+	// +optional
+	IndexURL string `json:"indexURL,omitempty"`
+}
+
 // WeaveRunSpec defines the immutable parameters of one chain execution.
 type WeaveRunSpec struct {
 	// ChainRef is the WeaveChain this run executes. Immutable after creation.
@@ -106,6 +135,14 @@ type WeaveRunSpec struct {
 	// steps of this run. Useful for passing runtime context from webhook payloads.
 	// +optional
 	ParameterOverrides []corev1.EnvVar `json:"parameterOverrides,omitempty"`
+
+	// StepOverrides provides per-step deployment parameters for deploy-kind steps.
+	// When a step is listed here the Deployment is named <runName>-<stepName> and
+	// owned by the WeaveRun; runner configuration is read from the artifact's
+	// metadata.yaml in fusion-index instead of from the WeaveServiceTemplate.
+	// Non-override runs are unaffected.
+	// +optional
+	StepOverrides []WeaveRunStepOverride `json:"stepOverrides,omitempty"`
 }
 
 // WeaveRunStatus reflects the live execution state of the run.
@@ -134,6 +171,12 @@ type WeaveRunStatus struct {
 	// been successfully created. Empty when the chain has no SharedStorage config.
 	// +optional
 	SharedPVCName string `json:"sharedPVCName,omitempty"`
+
+	// ActiveDeployments tracks run-owned Deployments created via StepOverrides.
+	// The map key is the Deployment name (<runName>-<stepName>). Health monitoring
+	// and code-source polling for these entries are handled by the run controller.
+	// +optional
+	ActiveDeployments map[string]WeaveActiveDeploymentStatus `json:"activeDeployments,omitempty"`
 }
 
 // +kubebuilder:object:root=true

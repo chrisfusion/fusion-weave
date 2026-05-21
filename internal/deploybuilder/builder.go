@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/indexclient"
 	"fusion-platform.io/fusion-weave/internal/security"
 )
 
@@ -290,6 +291,318 @@ func BuildIngress(
 				Hosts:      hosts,
 				SecretName: spec.TLSSecretName,
 			},
+		}
+	}
+
+	return ing
+}
+
+// BuildFromOverride constructs a run-owned Deployment for a deploy-kind step
+// that has a WeaveRunStepOverride. The Deployment is named <runName>-<stepName>
+// and owned by the WeaveRun (not the WeaveChain). The WeaveServiceTemplate
+// provides structural defaults (image, command, volumes, probes, security) and
+// AppMetadata overlays runtime fields sourced from the artifact's metadata.yaml
+// (runner port, runner args as env vars, resource requests/limits).
+// The codeSource on the Deployment is wired to override.ArtifactName / Tag so
+// the code-loader init container fetches the correct artifact at pod start.
+// The caller must set the OwnerReference.
+func BuildFromOverride(
+	tmpl *weavev1alpha1.WeaveServiceTemplate,
+	override *weavev1alpha1.WeaveRunStepOverride,
+	meta *indexclient.AppMetadata,
+	runName, stepName, namespace string,
+	sec security.Defaults,
+) *appsv1.Deployment {
+	name := RunDeploymentName(runName, stepName)
+	labels := map[string]string{
+		"fusion-platform.io/run":  runName,
+		StepLabel:                 stepName,
+	}
+
+	podSC := sec.PodSecurityContext
+	if tmpl.Spec.PodSecurityContext != nil {
+		podSC = tmpl.Spec.PodSecurityContext
+	}
+	containerSC := sec.ContainerSecurityContext
+	if tmpl.Spec.ContainerSecurityContext != nil {
+		containerSC = tmpl.Spec.ContainerSecurityContext
+	}
+
+	replicas := tmpl.Spec.Replicas
+	if replicas == 0 {
+		replicas = 1
+	}
+
+	revLimit := tmpl.Spec.RevisionHistoryLimit
+	volumes, mounts := buildVolumes(tmpl.Spec.Volumes)
+
+	// Build codeSource init container using override artifact/tag.
+	indexURL := override.IndexURL
+	if indexURL == "" {
+		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+	}
+	mountPath := "/weave-code"
+	loaderImage := "fusion-code-loader:latest"
+	if tmpl.Spec.CodeSource != nil {
+		if tmpl.Spec.CodeSource.MountPath != "" {
+			mountPath = tmpl.Spec.CodeSource.MountPath
+		}
+		if tmpl.Spec.CodeSource.LoaderImage != "" {
+			loaderImage = tmpl.Spec.CodeSource.LoaderImage
+		}
+	}
+	volumes = append(volumes, corev1.Volume{
+		Name:         "weave-code",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	})
+	mounts = append(mounts, corev1.VolumeMount{
+		Name:      "weave-code",
+		MountPath: mountPath,
+	})
+	initContainers := []corev1.Container{{
+		Name:            "code-loader",
+		Image:           loaderImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"/loader"},
+		Env: []corev1.EnvVar{
+			{Name: "INDEX_URL", Value: indexURL},
+			{Name: "ARTIFACT_NAME", Value: override.ArtifactName},
+			{Name: "ARTIFACT_TAG", Value: override.Tag},
+			{Name: "MOUNT_PATH", Value: mountPath},
+		},
+		VolumeMounts:    []corev1.VolumeMount{{Name: "weave-code", MountPath: mountPath}},
+		SecurityContext: containerSC,
+	}}
+
+	// Merge env: template env first, then runner.args from metadata (allows override).
+	env := make([]corev1.EnvVar, len(tmpl.Spec.Env))
+	copy(env, tmpl.Spec.Env)
+	if meta != nil {
+		for k, v := range meta.Runner.Args {
+			env = append(env, corev1.EnvVar{Name: k, Value: v})
+		}
+	}
+
+	// Resources: metadata wins when non-empty, otherwise fall back to template.
+	resources := tmpl.Spec.Resources
+	if meta != nil && (len(meta.Resources.Requests) > 0 || len(meta.Resources.Limits) > 0) {
+		resources = meta.Resources
+	}
+
+	// Ports: metadata runner.port wins when set, otherwise use template ports.
+	ports := tmpl.Spec.Ports
+	if meta != nil && meta.Runner.Port > 0 {
+		ports = []weavev1alpha1.WeaveServicePort{{
+			Name:       "http",
+			Port:       meta.Runner.Port,
+			TargetPort: meta.Runner.Port,
+			Protocol:   corev1.ProtocolTCP,
+		}}
+	}
+
+	var containerPorts []corev1.ContainerPort
+	for _, p := range ports {
+		containerPorts = append(containerPorts, corev1.ContainerPort{
+			Name:          p.Name,
+			ContainerPort: effectiveTargetPort(p),
+			Protocol:      p.Protocol,
+		})
+	}
+
+	container := corev1.Container{
+		Name:            "service",
+		Image:           tmpl.Spec.Image,
+		Command:         tmpl.Spec.Command,
+		Args:            tmpl.Spec.Args,
+		Env:             env,
+		Resources:       resources,
+		VolumeMounts:    mounts,
+		Ports:           containerPorts,
+		LivenessProbe:   tmpl.Spec.LivenessProbe,
+		ReadinessProbe:  tmpl.Spec.ReadinessProbe,
+		StartupProbe:    tmpl.Spec.StartupProbe,
+		SecurityContext: containerSC,
+	}
+
+	podLabels := make(map[string]string, len(labels)+len(sec.PodLabels))
+	for k, v := range sec.PodLabels {
+		podLabels[k] = v
+	}
+	for k, v := range labels {
+		podLabels[k] = v
+	}
+
+	var podAnnotations map[string]string
+	if len(sec.PodAnnotations) > 0 {
+		podAnnotations = make(map[string]string, len(sec.PodAnnotations))
+		for k, v := range sec.PodAnnotations {
+			podAnnotations[k] = v
+		}
+	}
+
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas:             &replicas,
+			RevisionHistoryLimit: revLimit,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      podLabels,
+					Annotations: podAnnotations,
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: tmpl.Spec.ServiceAccountName,
+					SecurityContext:    podSC,
+					InitContainers:     initContainers,
+					Containers:         []corev1.Container{container},
+					Volumes:            volumes,
+				},
+			},
+		},
+	}
+}
+
+// BuildServiceFromOverride constructs a run-owned Service for a step override.
+func BuildServiceFromOverride(
+	tmpl *weavev1alpha1.WeaveServiceTemplate,
+	meta *indexclient.AppMetadata,
+	runName, stepName, namespace string,
+) *corev1.Service {
+	name := RunServiceName(runName, stepName)
+	labels := map[string]string{
+		"fusion-platform.io/run": runName,
+		StepLabel:                stepName,
+	}
+
+	ports := tmpl.Spec.Ports
+	if meta != nil && meta.Runner.Port > 0 {
+		ports = []weavev1alpha1.WeaveServicePort{{
+			Name:       "http",
+			Port:       meta.Runner.Port,
+			TargetPort: meta.Runner.Port,
+			Protocol:   corev1.ProtocolTCP,
+		}}
+	}
+
+	var svcPorts []corev1.ServicePort
+	for _, p := range ports {
+		svcPorts = append(svcPorts, corev1.ServicePort{
+			Name:       p.Name,
+			Port:       p.Port,
+			TargetPort: intstr.FromInt32(effectiveTargetPort(p)),
+			Protocol:   p.Protocol,
+		})
+	}
+
+	svcType := tmpl.Spec.ServiceType
+	if svcType == "" {
+		svcType = corev1.ServiceTypeClusterIP
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     svcType,
+			Selector: labels,
+			Ports:    svcPorts,
+		},
+	}
+}
+
+// BuildIngressFromOverride constructs a run-owned Ingress for a step override.
+// ingressHost overrides the host from the template's ingress rules.
+// meta.Ingress.PathPrefix, when set, replaces the path in the first rule.
+// Returns nil when the template has no Ingress spec and ingressHost is empty.
+func BuildIngressFromOverride(
+	tmpl *weavev1alpha1.WeaveServiceTemplate,
+	meta *indexclient.AppMetadata,
+	override *weavev1alpha1.WeaveRunStepOverride,
+	runName, stepName, namespace string,
+) *networkingv1.Ingress {
+	if tmpl.Spec.Ingress == nil && override.IngressHost == "" {
+		return nil
+	}
+
+	name := RunIngressName(runName, stepName)
+	svcName := RunServiceName(runName, stepName)
+	labels := map[string]string{
+		"fusion-platform.io/run": runName,
+		StepLabel:                stepName,
+	}
+
+	// Determine port reference: prefer metadata port, fall back to template.
+	var servicePort networkingv1.ServiceBackendPort
+	if meta != nil && meta.Runner.Port > 0 {
+		servicePort = networkingv1.ServiceBackendPort{Number: meta.Runner.Port}
+	} else if tmpl.Spec.Ingress != nil && len(tmpl.Spec.Ingress.Rules) > 0 {
+		servicePort = resolveServicePort(tmpl.Spec.Ingress.Rules[0].ServicePort, tmpl.Spec.Ports)
+	} else if len(tmpl.Spec.Ports) > 0 {
+		servicePort = networkingv1.ServiceBackendPort{Number: tmpl.Spec.Ports[0].Port}
+	}
+
+	path := "/"
+	if meta != nil && meta.Ingress.PathPrefix != "" {
+		path = "/" + meta.Ingress.PathPrefix
+	} else if tmpl.Spec.Ingress != nil && len(tmpl.Spec.Ingress.Rules) > 0 {
+		path = tmpl.Spec.Ingress.Rules[0].Path
+	}
+
+	pathType := networkingv1.PathTypePrefix
+	host := override.IngressHost
+	if host == "" && tmpl.Spec.Ingress != nil && len(tmpl.Spec.Ingress.Rules) > 0 {
+		host = tmpl.Spec.Ingress.Rules[0].Host
+	}
+
+	ing := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+		Spec: networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{{
+				Host: host,
+				IngressRuleValue: networkingv1.IngressRuleValue{
+					HTTP: &networkingv1.HTTPIngressRuleValue{
+						Paths: []networkingv1.HTTPIngressPath{{
+							Path:     path,
+							PathType: &pathType,
+							Backend: networkingv1.IngressBackend{
+								Service: &networkingv1.IngressServiceBackend{
+									Name: svcName,
+									Port: servicePort,
+								},
+							},
+						}},
+					},
+				},
+			}},
+		},
+	}
+
+	if tmpl.Spec.Ingress != nil {
+		if tmpl.Spec.Ingress.IngressClassName != nil {
+			ing.Spec.IngressClassName = tmpl.Spec.Ingress.IngressClassName
+		}
+		if tmpl.Spec.Ingress.TLSSecretName != "" {
+			ing.Spec.TLS = []networkingv1.IngressTLS{{
+				Hosts:      []string{host},
+				SecretName: tmpl.Spec.Ingress.TLSSecretName,
+			}}
 		}
 	}
 

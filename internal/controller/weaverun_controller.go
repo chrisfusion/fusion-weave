@@ -55,9 +55,10 @@ var weaveRunGVK = schema.GroupVersionKind{
 // WeaveRunReconciler executes the DAG of a WeaveRun by managing batch/v1 Jobs.
 type WeaveRunReconciler struct {
 	client.Client
-	Scheme           *runtime.Scheme
-	KubeClient       kubernetes.Interface
-	SecurityDefaults security.Defaults
+	Scheme                 *runtime.Scheme
+	KubeClient             kubernetes.Interface
+	SecurityDefaults       security.Defaults
+	CodeSourcePollInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weaveruns,verbs=get;list;watch;create;update;patch;delete
@@ -96,8 +97,9 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					return ctrl.Result{}, err
 				}
 			}
+			finBase := client.MergeFrom(run.DeepCopy())
 			controllerutil.RemoveFinalizer(&run, finalizerDeployCleanup)
-			if err := r.Update(ctx, &run); err != nil {
+			if err := r.Patch(ctx, &run, finBase); err != nil {
 				return ctrl.Result{}, fmt.Errorf("remove deploy-cleanup finalizer: %w", err)
 			}
 		}
@@ -141,8 +143,9 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if !controllerutil.ContainsFinalizer(&run, finalizerDeployCleanup) {
 		for _, step := range chain.Spec.Steps {
 			if step.StepKind == weavev1alpha1.StepKindDeploy {
+				finBase := client.MergeFrom(run.DeepCopy())
 				controllerutil.AddFinalizer(&run, finalizerDeployCleanup)
-				if err := r.Update(ctx, &run); err != nil {
+				if err := r.Patch(ctx, &run, finBase); err != nil {
 					return ctrl.Result{}, fmt.Errorf("add deploy-cleanup finalizer: %w", err)
 				}
 				return ctrl.Result{Requeue: true}, nil
@@ -271,9 +274,24 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				continue
 			}
 			if ss.Phase == weavev1alpha1.StepPhaseDeployed {
-				// Service is up — keep the run alive with a periodic health poll.
-				if requeueAfter == 0 || 30*time.Second < requeueAfter {
-					requeueAfter = 30 * time.Second
+				override := findStepOverride(run.Spec.StepOverrides, name)
+				if override != nil {
+					// Run-owned deployment: handle code-source polling in this controller.
+					pollInterval := r.CodeSourcePollInterval
+					if pollInterval <= 0 {
+						pollInterval = defaultCodeSourcePollInterval
+					}
+					if requeueAfter == 0 || pollInterval < requeueAfter {
+						requeueAfter = pollInterval
+					}
+					if pollErr := r.pollRunDeploymentCodeSource(ctx, &run, ss.DeploymentRef.Name); pollErr != nil {
+						logger.Error(pollErr, "code-source poll failed", "step", name)
+					}
+				} else {
+					// Chain-owned deployment: health monitored by chain controller.
+					if requeueAfter == 0 || 30*time.Second < requeueAfter {
+						requeueAfter = 30 * time.Second
+					}
 				}
 				continue
 			}
@@ -282,13 +300,24 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				ss.Phase = weavev1alpha1.StepPhaseDeployed
 				stepStates[name] = dag.StepPhaseDeployed
 				stepMap[name] = ss
-				// Register for ongoing health monitoring on the chain.
 				stepSpec := findStepSpec(chain.Spec.Steps, name)
-				if stepSpec != nil && stepSpec.ServiceTemplateRef != nil {
-					svcTmpl := serviceTemplates[stepSpec.ServiceTemplateRef.Name]
-					if svcTmpl != nil {
-						if regErr := r.registerActiveDeployment(ctx, &chain, name, deploy.Name, svcTmpl); regErr != nil {
-							logger.Error(regErr, "register active deployment", "step", name)
+				override := findStepOverride(run.Spec.StepOverrides, name)
+				if override != nil {
+					// Run-owned: register in run status for code-source polling.
+					if stepSpec != nil && stepSpec.ServiceTemplateRef != nil {
+						svcTmpl := serviceTemplates[stepSpec.ServiceTemplateRef.Name]
+						if svcTmpl != nil {
+							r.registerRunActiveDeployment(&run, name, deploy.Name, override, svcTmpl)
+						}
+					}
+				} else {
+					// Chain-owned: register in chain status for health monitoring.
+					if stepSpec != nil && stepSpec.ServiceTemplateRef != nil {
+						svcTmpl := serviceTemplates[stepSpec.ServiceTemplateRef.Name]
+						if svcTmpl != nil {
+							if regErr := r.registerActiveDeployment(ctx, &chain, name, deploy.Name, svcTmpl); regErr != nil {
+								logger.Error(regErr, "register active deployment", "step", name)
+							}
 						}
 					}
 				}
@@ -440,8 +469,15 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				if svcTmpl == nil {
 					continue
 				}
-				if err := r.syncDeployStep(ctx, &chain, &run, stepSpec, svcTmpl, &ss); err != nil {
-					return ctrl.Result{}, fmt.Errorf("sync deploy step %q: %w", stepName, err)
+				override := findStepOverride(run.Spec.StepOverrides, stepName)
+				if override != nil {
+					if err := r.syncDeployStepFromOverride(ctx, runWithGVK, stepSpec, svcTmpl, override, &ss); err != nil {
+						return ctrl.Result{}, fmt.Errorf("sync override deploy step %q: %w", stepName, err)
+					}
+				} else {
+					if err := r.syncDeployStep(ctx, &chain, &run, stepSpec, svcTmpl, &ss); err != nil {
+						return ctrl.Result{}, fmt.Errorf("sync deploy step %q: %w", stepName, err)
+					}
 				}
 				stepStates[stepName] = dag.StepPhaseRunning
 				// Poll every 10s while waiting for the Deployment to become Available.
@@ -1001,6 +1037,167 @@ func (r *WeaveRunReconciler) doDeployTeardown(ctx context.Context, run *weavev1a
 		}
 	}
 
+	// Clean up run-owned ActiveDeployments entries (step overrides).
+	if len(run.Status.ActiveDeployments) > 0 {
+		runStatusPatch := client.MergeFrom(run.DeepCopy())
+		for _, ss := range run.Status.Steps {
+			if ss.DeploymentRef != nil {
+				delete(run.Status.ActiveDeployments, ss.DeploymentRef.Name)
+			}
+		}
+		if err := r.Status().Patch(ctx, run, runStatusPatch); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("patch run status after deploy teardown: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// findStepOverride returns the WeaveRunStepOverride for stepName, or nil if none.
+func findStepOverride(overrides []weavev1alpha1.WeaveRunStepOverride, stepName string) *weavev1alpha1.WeaveRunStepOverride {
+	for i := range overrides {
+		if overrides[i].StepName == stepName {
+			return &overrides[i]
+		}
+	}
+	return nil
+}
+
+// syncDeployStepFromOverride creates or rolling-updates the run-owned Deployment,
+// Service, and Ingress for a deploy step with a WeaveRunStepOverride. The resources
+// are named <runName>-<stepName> and owned by the WeaveRun. AppMetadata is fetched
+// from fusion-index at sync time to apply runner port, args, and resource limits.
+func (r *WeaveRunReconciler) syncDeployStepFromOverride(
+	ctx context.Context,
+	runWithGVK *weavev1alpha1.WeaveRun,
+	stepSpec *weavev1alpha1.WeaveChainStep,
+	svcTmpl *weavev1alpha1.WeaveServiceTemplate,
+	override *weavev1alpha1.WeaveRunStepOverride,
+	ss *weavev1alpha1.WeaveRunStepStatus,
+) error {
+	indexURL := override.IndexURL
+	if indexURL == "" {
+		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+	}
+	meta, err := indexclient.FetchAppMetadata(ctx, indexURL, override.ArtifactName, override.Tag)
+	if err != nil {
+		return fmt.Errorf("fetch app metadata for %s@%s: %w", override.ArtifactName, override.Tag, err)
+	}
+
+	ownerRef := metav1.NewControllerRef(runWithGVK, weaveRunGVK)
+	deployName := deploybuilder.RunDeploymentName(runWithGVK.Name, stepSpec.Name)
+
+	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults)
+	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
+
+	var existing appsv1.Deployment
+	err = r.Get(ctx, types.NamespacedName{Namespace: runWithGVK.Namespace, Name: deployName}, &existing)
+	if errors.IsNotFound(err) {
+		if createErr := r.Create(ctx, desired); createErr != nil && !errors.IsAlreadyExists(createErr) {
+			return fmt.Errorf("create override deployment %q: %w", deployName, createErr)
+		}
+	} else if err == nil {
+		patch := client.MergeFrom(existing.DeepCopy())
+		existing.Spec.Template = desired.Spec.Template
+		existing.Spec.Replicas = desired.Spec.Replicas
+		if patchErr := r.Patch(ctx, &existing, patch); patchErr != nil {
+			return fmt.Errorf("patch override deployment %q: %w", deployName, patchErr)
+		}
+	} else {
+		return fmt.Errorf("get override deployment %q: %w", deployName, err)
+	}
+
+	svc := deploybuilder.BuildServiceFromOverride(svcTmpl, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace)
+	svc.OwnerReferences = []metav1.OwnerReference{*ownerRef}
+	if err := r.upsertService(ctx, svc); err != nil {
+		return fmt.Errorf("upsert override service %q: %w", svc.Name, err)
+	}
+
+	ing := deploybuilder.BuildIngressFromOverride(svcTmpl, meta, override, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace)
+	if ing != nil {
+		ing.OwnerReferences = []metav1.OwnerReference{*ownerRef}
+		if err := r.upsertIngress(ctx, ing); err != nil {
+			return fmt.Errorf("upsert override ingress %q: %w", ing.Name, err)
+		}
+	}
+
+	if ss.StartTime == nil {
+		now := metav1.Now()
+		ss.StartTime = &now
+	}
+	ss.Phase = weavev1alpha1.StepPhaseRunning
+	ss.DeploymentRef = &corev1.LocalObjectReference{Name: deployName}
+	return nil
+}
+
+// registerRunActiveDeployment records a run-owned deployment in run.Status.ActiveDeployments
+// for code-source polling. It mutates run in-place; the caller's final status patch persists it.
+func (r *WeaveRunReconciler) registerRunActiveDeployment(
+	run *weavev1alpha1.WeaveRun,
+	stepName, deploymentName string,
+	override *weavev1alpha1.WeaveRunStepOverride,
+	svcTmpl *weavev1alpha1.WeaveServiceTemplate,
+) {
+	dur, err := time.ParseDuration(svcTmpl.Spec.UnhealthyDuration)
+	if err != nil {
+		dur = 5 * time.Minute
+	}
+	indexURL := override.IndexURL
+	if indexURL == "" {
+		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+	}
+	entry := weavev1alpha1.WeaveActiveDeploymentStatus{
+		DeploymentName:           deploymentName,
+		StepName:                 stepName,
+		Health:                   weavev1alpha1.DeployHealthHealthy,
+		UnhealthyDurationSeconds: int64(dur.Seconds()),
+		CodeSourceArtifact:       override.ArtifactName,
+		CodeSourceTag:            override.Tag,
+		CodeSourceIndexURL:       indexURL,
+	}
+	if run.Status.ActiveDeployments == nil {
+		run.Status.ActiveDeployments = map[string]weavev1alpha1.WeaveActiveDeploymentStatus{}
+	}
+	run.Status.ActiveDeployments[deploymentName] = entry
+}
+
+// pollRunDeploymentCodeSource checks if the tracked artifact tag has moved to a new
+// version and triggers a rolling restart when it has. Mutates run.Status.ActiveDeployments
+// in-place; the caller's final status patch persists the updated CodeSourceDeployedVersion.
+func (r *WeaveRunReconciler) pollRunDeploymentCodeSource(ctx context.Context, run *weavev1alpha1.WeaveRun, deploymentName string) error {
+	entry, ok := run.Status.ActiveDeployments[deploymentName]
+	if !ok || entry.CodeSourceArtifact == "" {
+		return nil
+	}
+	current, err := indexclient.ResolveTag(ctx, entry.CodeSourceIndexURL, entry.CodeSourceArtifact, entry.CodeSourceTag)
+	if err != nil {
+		return fmt.Errorf("resolve tag: %w", err)
+	}
+	if current == "" || current == entry.CodeSourceDeployedVersion {
+		return nil
+	}
+
+	log.FromContext(ctx).Info("code-source version changed, triggering rolling restart",
+		"artifact", entry.CodeSourceArtifact,
+		"old", entry.CodeSourceDeployedVersion,
+		"new", current)
+
+	var deploy appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: deploymentName}, &deploy); err != nil {
+		return fmt.Errorf("get deployment for code reload: %w", err)
+	}
+	deployPatch := client.MergeFrom(deploy.DeepCopy())
+	if deploy.Spec.Template.Annotations == nil {
+		deploy.Spec.Template.Annotations = map[string]string{}
+	}
+	deploy.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().UTC().Format(time.RFC3339)
+	deploy.Spec.Template.Annotations["fusion-platform.io/code-source-version"] = current
+	if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
+		return fmt.Errorf("patch deployment for code reload: %w", err)
+	}
+
+	entry.CodeSourceDeployedVersion = current
+	run.Status.ActiveDeployments[deploymentName] = entry
 	return nil
 }
 
