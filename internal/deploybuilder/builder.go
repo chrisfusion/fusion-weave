@@ -5,6 +5,7 @@ package deploybuilder
 
 import (
 	"fmt"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -25,6 +26,59 @@ const (
 	StepLabel  = "fusion-platform.io/step"
 )
 
+// weaveEnvVars returns the standard WEAVE_* env vars injected into every
+// codeSource container, plus any runner.args from metadata as plain env vars.
+// It is the single source of truth for what the runner sees at startup.
+func weaveEnvVars(artifactName, tag, version, namespace, mountPath string, meta *indexclient.AppMetadata) []corev1.EnvVar {
+	vars := []corev1.EnvVar{
+		{Name: "WEAVE_ARTIFACT", Value: artifactName},
+		{Name: "WEAVE_TAG", Value: tag},
+		{Name: "WEAVE_VERSION", Value: version},
+		{Name: "WEAVE_NAMESPACE", Value: namespace},
+		{Name: "WEAVE_MOUNT_PATH", Value: mountPath},
+	}
+	if meta != nil {
+		if meta.Runner.Port > 0 {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_PORT", Value: strconv.Itoa(int(meta.Runner.Port))})
+		}
+		if meta.Ingress.PathPrefix != "" {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_INGRESS_PATH_PREFIX", Value: meta.Ingress.PathPrefix})
+		}
+		if meta.Runner.Type != "" {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_RUNNER_TYPE", Value: meta.Runner.Type})
+		}
+		if meta.Runner.BuilderImage != "" {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_BUILDER_IMAGE", Value: meta.Runner.BuilderImage})
+		}
+		if meta.Maintainer != "" {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_MAINTAINER", Value: meta.Maintainer})
+		}
+		for k, v := range meta.Runner.Args {
+			vars = append(vars, corev1.EnvVar{Name: k, Value: v})
+		}
+	}
+	return vars
+}
+
+// UpdateVersionEnvVar replaces WEAVE_VERSION on every container in the slice,
+// or appends it when not present. Call this alongside the restartedAt annotation
+// patch in triggerCodeReload so new pods see the correct version immediately.
+func UpdateVersionEnvVar(containers []corev1.Container, version string) {
+	for i := range containers {
+		found := false
+		for j := range containers[i].Env {
+			if containers[i].Env[j].Name == "WEAVE_VERSION" {
+				containers[i].Env[j].Value = version
+				found = true
+				break
+			}
+		}
+		if !found {
+			containers[i].Env = append(containers[i].Env, corev1.EnvVar{Name: "WEAVE_VERSION", Value: version})
+		}
+	}
+}
+
 // Build constructs an apps/v1 Deployment for a deploy-kind step.
 // The Deployment is owned by the WeaveChain (not the WeaveRun) so it persists
 // across runs. The caller must set the OwnerReference.
@@ -34,6 +88,8 @@ func Build(
 	tmpl *weavev1alpha1.WeaveServiceTemplate,
 	chainName, stepName, namespace string,
 	sec security.Defaults,
+	meta *indexclient.AppMetadata,
+	version string,
 ) *appsv1.Deployment {
 	name := DeploymentName(chainName, stepName)
 	labels := map[string]string{
@@ -104,12 +160,22 @@ func Build(
 		})
 	}
 
+	env := make([]corev1.EnvVar, len(tmpl.Spec.Env))
+	copy(env, tmpl.Spec.Env)
+	if cs := tmpl.Spec.CodeSource; cs != nil {
+		mountPath := cs.MountPath
+		if mountPath == "" {
+			mountPath = "/weave-code"
+		}
+		env = append(env, weaveEnvVars(cs.ArtifactName, cs.Tag, version, namespace, mountPath, meta)...)
+	}
+
 	container := corev1.Container{
 		Name:            "service",
 		Image:           tmpl.Spec.Image,
 		Command:         tmpl.Spec.Command,
 		Args:            tmpl.Spec.Args,
-		Env:             tmpl.Spec.Env,
+		Env:             env,
 		Resources:       tmpl.Spec.Resources,
 		VolumeMounts:    mounts,
 		LivenessProbe:   tmpl.Spec.LivenessProbe,
@@ -312,6 +378,7 @@ func BuildFromOverride(
 	meta *indexclient.AppMetadata,
 	runName, stepName, namespace string,
 	sec security.Defaults,
+	version string,
 ) *appsv1.Deployment {
 	name := RunDeploymentName(runName, stepName)
 	labels := map[string]string{
@@ -374,14 +441,10 @@ func BuildFromOverride(
 		SecurityContext: containerSC,
 	}}
 
-	// Merge env: template env first, then runner.args from metadata (allows override).
+	// Merge env: template env first, then standard WEAVE_* vars + runner.args from metadata.
 	env := make([]corev1.EnvVar, len(tmpl.Spec.Env))
 	copy(env, tmpl.Spec.Env)
-	if meta != nil {
-		for k, v := range meta.Runner.Args {
-			env = append(env, corev1.EnvVar{Name: k, Value: v})
-		}
-	}
+	env = append(env, weaveEnvVars(override.ArtifactName, override.Tag, version, namespace, mountPath, meta)...)
 
 	// Resources: metadata wins when non-empty, otherwise fall back to template.
 	resources := tmpl.Spec.Resources

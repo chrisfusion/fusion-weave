@@ -2,22 +2,19 @@
 // Copyright (C) 2026 fusion-platform contributors
 
 // loader is the init container binary for code-source deploy steps.
-// It resolves an artifact tag in fusion-index, downloads the archive, unpacks
-// it to MOUNT_PATH, and writes MOUNT_PATH/.version with the resolved semver.
+// It resolves an artifact tag in fusion-index, downloads each file, copies it
+// as-is to MOUNT_PATH, and writes MOUNT_PATH/.version with the resolved semver.
+// No archive extraction is performed — the container image handles that itself.
 //
 // Environment variables:
 //
 //	INDEX_URL      — fusion-index base URL (no trailing slash)
 //	ARTIFACT_NAME  — full artifact name (e.g. "org.myteam.myapp")
 //	ARTIFACT_TAG   — mutable tag to resolve (e.g. "stable")
-//	MOUNT_PATH     — directory to unpack into (default: /weave-code)
+//	MOUNT_PATH     — directory to copy files into (default: /weave-code)
 package main
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,7 +22,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 func main() {
@@ -56,10 +52,11 @@ func main() {
 		if err != nil {
 			fatalf("download %s: %v", f.Name, err)
 		}
-		if err := unpack(data, f.Name, mountPath); err != nil {
-			fatalf("unpack %s: %v", f.Name, err)
+		dest := filepath.Join(mountPath, filepath.Base(f.Name))
+		if err := os.WriteFile(dest, data, 0644); err != nil {
+			fatalf("write %s: %v", f.Name, err)
 		}
-		fmt.Printf("loader: installed %s\n", f.Name)
+		fmt.Printf("loader: copied %s\n", f.Name)
 	}
 
 	// Write .version from the index-resolved semver — not from metadata.yaml content.
@@ -68,7 +65,7 @@ func main() {
 		fatalf("write .version: %v", err)
 	}
 
-	fmt.Printf("loader: ready — %s@%s unpacked to %s\n", artifactName, version, mountPath)
+	fmt.Printf("loader: ready — %s@%s copied to %s\n", artifactName, version, mountPath)
 }
 
 // --- fusion-index API helpers ---
@@ -161,106 +158,6 @@ func getJSON(u string, dst any) error {
 		return fmt.Errorf("GET %s: status %d", u, resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(dst)
-}
-
-// --- archive unpacking ---
-
-func unpack(data []byte, fileName, destDir string) error {
-	lower := strings.ToLower(fileName)
-	switch {
-	case strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz"):
-		return unpackTarGz(data, destDir)
-	case strings.HasSuffix(lower, ".zip"):
-		return unpackZip(data, destDir)
-	default:
-		// Unknown extension — write the raw file.
-		out := filepath.Join(destDir, filepath.Base(fileName))
-		return os.WriteFile(out, data, 0644)
-	}
-}
-
-func unpackTarGz(data []byte, destDir string) error {
-	gr, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("gzip reader: %w", err)
-	}
-	defer gr.Close()
-	tr := tar.NewReader(gr)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("tar next: %w", err)
-		}
-		target := filepath.Join(destDir, filepath.Clean(hdr.Name))
-		// Guard against path traversal.
-		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) &&
-			target != filepath.Clean(destDir) {
-			return fmt.Errorf("tar: illegal path %q", hdr.Name)
-		}
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return err
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return err
-			}
-			f.Close()
-		}
-	}
-	return nil
-}
-
-func unpackZip(data []byte, destDir string) error {
-	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return fmt.Errorf("zip reader: %w", err)
-	}
-	for _, f := range r.File {
-		target := filepath.Join(destDir, filepath.Clean(f.Name))
-		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) &&
-			target != filepath.Clean(destDir) {
-			return fmt.Errorf("zip: illegal path %q", f.Name)
-		}
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		if _, err := io.Copy(out, rc); err != nil {
-			rc.Close()
-			out.Close()
-			return err
-		}
-		rc.Close()
-		out.Close()
-	}
-	return nil
 }
 
 // --- helpers ---

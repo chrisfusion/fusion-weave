@@ -600,8 +600,25 @@ func (r *WeaveRunReconciler) syncDeployStep(
 
 	deployName := deploybuilder.DeploymentName(chain.Name, stepSpec.Name)
 
+	// Fetch metadata and version best-effort so WEAVE_* env vars are populated.
+	// Failures are non-fatal: the polling loop will correct WEAVE_VERSION on the
+	// next successful tag resolution, and env vars will be missing until then.
+	var csMeta *indexclient.AppMetadata
+	var csVersion string
+	if cs := svcTmpl.Spec.CodeSource; cs != nil {
+		idxURL := cs.IndexURL
+		if idxURL == "" {
+			idxURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+		}
+		if m, v, metaErr := indexclient.FetchAppMetadataAndVersion(ctx, idxURL, cs.ArtifactName, cs.Tag); metaErr == nil {
+			csMeta, csVersion = m, v
+		} else {
+			log.FromContext(ctx).Error(metaErr, "fetch metadata for deploy step (best-effort)", "artifact", cs.ArtifactName)
+		}
+	}
+
 	// Upsert Deployment.
-	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults)
+	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment
@@ -1079,7 +1096,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	if indexURL == "" {
 		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
 	}
-	meta, err := indexclient.FetchAppMetadata(ctx, indexURL, override.ArtifactName, override.Tag)
+	meta, csVersion, err := indexclient.FetchAppMetadataAndVersion(ctx, indexURL, override.ArtifactName, override.Tag)
 	if err != nil {
 		return fmt.Errorf("fetch app metadata for %s@%s: %w", override.ArtifactName, override.Tag, err)
 	}
@@ -1087,7 +1104,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	ownerRef := metav1.NewControllerRef(runWithGVK, weaveRunGVK)
 	deployName := deploybuilder.RunDeploymentName(runWithGVK.Name, stepSpec.Name)
 
-	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults)
+	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment
@@ -1192,6 +1209,7 @@ func (r *WeaveRunReconciler) pollRunDeploymentCodeSource(ctx context.Context, ru
 	}
 	deploy.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().UTC().Format(time.RFC3339)
 	deploy.Spec.Template.Annotations["fusion-platform.io/code-source-version"] = current
+	deploybuilder.UpdateVersionEnvVar(deploy.Spec.Template.Spec.Containers, current)
 	if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
 		return fmt.Errorf("patch deployment for code reload: %w", err)
 	}

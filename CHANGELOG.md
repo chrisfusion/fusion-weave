@@ -15,6 +15,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `deploybuilder.RunDeploymentName`, `RunServiceName`, `RunIngressName` — name helpers for run-owned resources (`<runName>-<stepName>`).
 - `WeaveRunReconciler.CodeSourcePollInterval` — wired from `CODE_SOURCE_POLL_INTERVAL` env var (same as the chain reconciler); governs how often run-owned deployments are polled for artifact tag changes.
 
+### Changed
+- `cmd/loader/main.go` — loader no longer extracts archives; all downloaded files are now written as-is to `mountPath` using their original filename. The container image is responsible for any unpacking.
+- `internal/deploybuilder` — every deploy-kind container now receives a consistent set of `WEAVE_*` env vars: `WEAVE_ARTIFACT`, `WEAVE_TAG`, `WEAVE_VERSION`, `WEAVE_NAMESPACE`, `WEAVE_MOUNT_PATH`, and — when `metadata.yaml` is present — `WEAVE_PORT`, `WEAVE_RUNNER_TYPE`, `WEAVE_BUILDER_IMAGE`, `WEAVE_MAINTAINER`, `WEAVE_INGRESS_PATH_PREFIX`, plus all `runner.args` keys. Previously `runner.args` injection only applied to the `stepOverrides` path; chain-owned deployments now receive them too. `WEAVE_VERSION` is kept accurate on rolling restarts triggered by tag changes.
+- `internal/indexclient` — `AppMetadata` gains `Maintainer` (top-level) and `Runner.BuilderImage` fields, parsed from `metadata.yaml`. New `FetchAppMetadataAndVersion` returns metadata and resolved semver in one round-trip.
+
 ### Fixed
 - `cmd/loader/main.go` — loader previously fetched only the first file for an artifact version. It now downloads **all** files: archives (`.tar.gz`, `.tgz`, `.zip`) are unpacked into `mountPath`; plain files (`.py`, `.yaml`) are written directly. The `.version` file is always written from the index-resolved semver, never from `metadata.yaml` content.
 - `WeaveRunReconciler` — `r.Update` when adding/removing the `deploy-cleanup` finalizer replaced the entire spec, silently pruning `spec.stepOverrides` because the informer cache returns the unregistered field as nil in older operator builds. Changed both finalizer mutations to `r.Patch(ctx, &run, client.MergeFrom(...))` so only the metadata diff is sent and the spec is never touched.

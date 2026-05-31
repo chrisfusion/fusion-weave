@@ -350,6 +350,7 @@ func (r *WeaveChainReconciler) triggerCodeReload(
 	}
 	deploy.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().UTC().Format(time.RFC3339)
 	deploy.Spec.Template.Annotations["fusion-platform.io/code-source-version"] = newVersion
+	deploybuilder.UpdateVersionEnvVar(deploy.Spec.Template.Spec.Containers, newVersion)
 	if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
 		return fmt.Errorf("patch deployment for code reload: %w", err)
 	}

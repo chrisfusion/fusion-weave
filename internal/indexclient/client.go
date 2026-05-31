@@ -90,9 +90,10 @@ type AppRunnerArg struct {
 
 // AppRunner holds runner configuration parsed from an artifact's metadata.yaml.
 type AppRunner struct {
-	Type string
-	Port int32
-	Args map[string]string
+	Type         string
+	Port         int32
+	Args         map[string]string
+	BuilderImage string
 }
 
 // AppIngress holds ingress configuration parsed from an artifact's metadata.yaml.
@@ -103,17 +104,20 @@ type AppIngress struct {
 // AppMetadata is the subset of metadata.yaml fields the operator uses at runtime.
 // Name and version are intentionally absent — those come from fusion-index directly.
 type AppMetadata struct {
-	Runner    AppRunner
-	Ingress   AppIngress
-	Resources corev1.ResourceRequirements
+	Runner     AppRunner
+	Ingress    AppIngress
+	Resources  corev1.ResourceRequirements
+	Maintainer string
 }
 
 // rawMetadata mirrors the metadata.yaml structure for JSON/YAML unmarshalling.
 type rawMetadata struct {
-	Runner struct {
-		Type string            `yaml:"type" json:"type"`
-		Port int32             `yaml:"port" json:"port"`
-		Args map[string]string `yaml:"args" json:"args"`
+	Maintainer string `yaml:"maintainer" json:"maintainer"`
+	Runner     struct {
+		Type         string            `yaml:"type" json:"type"`
+		Port         int32             `yaml:"port" json:"port"`
+		Args         map[string]string `yaml:"args" json:"args"`
+		BuilderImage string            `yaml:"builderImage" json:"builderImage"`
 	} `yaml:"runner" json:"runner"`
 	Ingress struct {
 		PathPrefix string `yaml:"pathPrefix" json:"pathPrefix"`
@@ -128,15 +132,23 @@ type rawMetadata struct {
 // metadata.yaml file attached to that version, and returns the parsed AppMetadata.
 // Name and version are not returned — callers must use ResolveTag for the version.
 func FetchAppMetadata(ctx context.Context, baseURL, artifactName, tag string) (*AppMetadata, error) {
+	meta, _, err := FetchAppMetadataAndVersion(ctx, baseURL, artifactName, tag)
+	return meta, err
+}
+
+// FetchAppMetadataAndVersion is like FetchAppMetadata but also returns the
+// resolved semver string, avoiding a separate ResolveTag round-trip.
+func FetchAppMetadataAndVersion(ctx context.Context, baseURL, artifactName, tag string) (*AppMetadata, string, error) {
 	id, err := findArtifactID(ctx, baseURL, artifactName)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	version, err := resolveTagForID(ctx, baseURL, id, tag)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return fetchMetadataForVersion(ctx, baseURL, id, version)
+	meta, err := fetchMetadataForVersion(ctx, baseURL, id, version)
+	return meta, version, err
 }
 
 func fetchMetadataForVersion(ctx context.Context, baseURL string, artifactID int64, version string) (*AppMetadata, error) {
@@ -199,10 +211,12 @@ func parseMetadata(data []byte) (*AppMetadata, error) {
 	}
 
 	meta := &AppMetadata{
+		Maintainer: raw.Maintainer,
 		Runner: AppRunner{
-			Type: raw.Runner.Type,
-			Port: raw.Runner.Port,
-			Args: raw.Runner.Args,
+			Type:         raw.Runner.Type,
+			Port:         raw.Runner.Port,
+			Args:         raw.Runner.Args,
+			BuilderImage: raw.Runner.BuilderImage,
 		},
 		Ingress: AppIngress{
 			PathPrefix: raw.Ingress.PathPrefix,
