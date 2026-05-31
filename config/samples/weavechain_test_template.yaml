@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# WeaveServiceTemplate + WeaveChain for app.test-template (Streamlit).
+#
+# Code is fetched from fusion-index tag "stable" on every pod start via the
+# code-loader init container. Tag changes in fusion-index trigger automatic
+# rolling restarts via codeSource polling (CODE_SOURCE_POLL_INTERVAL, default 60s).
+#
+# Initial fire:
+#   kubectl annotate weavetrigger test-template-trigger fusion-platform.io/fire=true --overwrite -n fusion
+#
+# Monitor:
+#   kubectl get fr -n fusion -w
+#   kubectl port-forward svc/test-template-app 8501:8501 -n fusion
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveServiceTemplate
+metadata:
+  name: test-template
+  namespace: fusion
+spec:
+  image: fusion-runner-python312:local
+  replicas: 1
+  ports:
+    - name: http
+      port: 8501
+      targetPort: 8501
+      protocol: TCP
+  resources:
+    requests:
+      cpu: 200m
+      memory: 500Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  readinessProbe:
+    httpGet:
+      path: /_stcore/health
+      port: 8501
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 6
+  serviceType: ClusterIP
+  unhealthyDuration: "5m"
+  revisionHistoryLimit: 2
+  codeSource:
+    artifactName: app.test-template
+    tag: stable
+    loaderImage: fusion-weave-operator:0.2.1
+    loaderImagePullPolicy: IfNotPresent
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: test-template
+  namespace: fusion
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: app
+      stepKind: Deploy
+      serviceTemplateRef:
+        name: test-template
+      runOnSuccess: true
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: test-template-trigger
+  namespace: fusion
+spec:
+  chainRef:
+    name: test-template
+  type: OnDemand
