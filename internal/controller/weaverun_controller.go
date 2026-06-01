@@ -59,6 +59,20 @@ type WeaveRunReconciler struct {
 	KubeClient             kubernetes.Interface
 	SecurityDefaults       security.Defaults
 	CodeSourcePollInterval time.Duration
+	FusionIndexURL         string
+}
+
+// resolveIndexURL returns the effective fusion-index base URL for a given
+// explicit CRD field value. Priority: explicit field → FUSION_INDEX_URL env
+// var (r.FusionIndexURL) → hardcoded in-cluster default.
+func (r *WeaveRunReconciler) resolveIndexURL(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if r.FusionIndexURL != "" {
+		return r.FusionIndexURL
+	}
+	return "http://fusion-index-backend.fusion.svc.cluster.local:8080"
 }
 
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weaveruns,verbs=get;list;watch;create;update;patch;delete
@@ -606,10 +620,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	var csMeta *indexclient.AppMetadata
 	var csVersion string
 	if cs := svcTmpl.Spec.CodeSource; cs != nil {
-		idxURL := cs.IndexURL
-		if idxURL == "" {
-			idxURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
-		}
+		idxURL := r.resolveIndexURL(cs.IndexURL)
 		if m, v, metaErr := indexclient.FetchAppMetadataAndVersion(ctx, idxURL, cs.ArtifactName, cs.Tag); metaErr == nil {
 			csMeta, csVersion = m, v
 		} else {
@@ -618,7 +629,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	}
 
 	// Upsert Deployment.
-	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion)
+	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment
@@ -728,10 +739,7 @@ func (r *WeaveRunReconciler) registerActiveDeployment(
 	// Resolve the initial version best-effort; a failure is non-fatal — the
 	// polling loop will populate it on the first successful poll.
 	if cs := svcTmpl.Spec.CodeSource; cs != nil {
-		indexURL := cs.IndexURL
-		if indexURL == "" {
-			indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
-		}
+		indexURL := r.resolveIndexURL(cs.IndexURL)
 		entry.CodeSourceArtifact = cs.ArtifactName
 		entry.CodeSourceTag = cs.Tag
 		entry.CodeSourceIndexURL = indexURL
@@ -1092,10 +1100,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	override *weavev1alpha1.WeaveRunStepOverride,
 	ss *weavev1alpha1.WeaveRunStepStatus,
 ) error {
-	indexURL := override.IndexURL
-	if indexURL == "" {
-		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
-	}
+	indexURL := r.resolveIndexURL(override.IndexURL)
 	meta, csVersion, err := indexclient.FetchAppMetadataAndVersion(ctx, indexURL, override.ArtifactName, override.Tag)
 	if err != nil {
 		return fmt.Errorf("fetch app metadata for %s@%s: %w", override.ArtifactName, override.Tag, err)
@@ -1104,7 +1109,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	ownerRef := metav1.NewControllerRef(runWithGVK, weaveRunGVK)
 	deployName := deploybuilder.RunDeploymentName(runWithGVK.Name, stepSpec.Name)
 
-	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion)
+	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment
@@ -1159,10 +1164,7 @@ func (r *WeaveRunReconciler) registerRunActiveDeployment(
 	if err != nil {
 		dur = 5 * time.Minute
 	}
-	indexURL := override.IndexURL
-	if indexURL == "" {
-		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
-	}
+	indexURL := r.resolveIndexURL(override.IndexURL)
 	entry := weavev1alpha1.WeaveActiveDeploymentStatus{
 		DeploymentName:           deploymentName,
 		StepName:                 stepName,

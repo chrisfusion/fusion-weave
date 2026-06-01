@@ -73,7 +73,8 @@ type WeaveIngressSpec struct {
 // and unpacked into the pod before the main container starts.
 type CodeSourceSpec struct {
 	// IndexURL is the fusion-index base URL.
-	// +kubebuilder:default="http://fusion-index-backend.fusion.svc.cluster.local:8080"
+	// When empty the operator falls back to the FUSION_INDEX_URL env var,
+	// then to the in-cluster default http://fusion-index-backend.fusion.svc.cluster.local:8080.
 	// +optional
 	IndexURL string `json:"indexURL,omitempty"`
 

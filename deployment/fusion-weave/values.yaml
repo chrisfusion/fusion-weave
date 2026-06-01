@@ -186,6 +186,11 @@ workload:
 codeSource:
   # pollInterval is a Go duration string (e.g. "30s", "2m"). Maps to CODE_SOURCE_POLL_INTERVAL.
   pollInterval: "60s"
+  # indexURL is the cluster-wide default base URL for fusion-index.
+  # Applied to any deploy step whose WeaveServiceTemplate does not set codeSource.indexURL.
+  # Maps to FUSION_INDEX_URL on the operator pod.
+  # Leave empty to use the built-in default: http://fusion-index-backend.fusion.svc.cluster.local:8080
+  indexURL: ""
 
 # Sample resources deployed alongside the operator.
 # Disabled by default — enable to get a working shared-storage demo chain.

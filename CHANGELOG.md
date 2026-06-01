@@ -8,6 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `codeSource.indexURL` Helm value and `FUSION_INDEX_URL` operator env var — cluster-wide default base URL for fusion-index, applied to any deploy step whose `WeaveServiceTemplate` does not set `codeSource.indexURL` explicitly. Falls back to the built-in in-cluster default when unset.
 - `WeaveRun.spec.stepOverrides` — per-step deployment parameters for deploy-kind steps. When a step is listed in `stepOverrides`, the operator creates a run-owned Deployment named `<runName>-<stepName>` instead of the chain-owned `<chainName>-<stepName>`, enabling a single shared `WeaveChain` to serve many service instances with different artifact, tag, and ingress host.
 - `WeaveRun.status.activeDeployments` — tracks run-owned Deployments (created via `stepOverrides`) for code-source polling. Health monitoring and rolling restarts on artifact tag changes are handled by the run controller for these entries.
 - `indexclient.FetchAppMetadata` — resolves an artifact tag in fusion-index and downloads + parses the artifact's `metadata.yaml`, returning runner type/port/args, resource requests/limits, and ingress path prefix. Used by the run controller to auto-configure run-owned Deployments without repeating those fields in every `WeaveServiceTemplate`.

@@ -119,6 +119,8 @@ func main() {
 			codePollInterval = d
 		}
 	}
+
+	fusionIndexURL := os.Getenv("FUSION_INDEX_URL")
 	if err := (&controller.WeaveChainReconciler{
 		Client:                 mgr.GetClient(),
 		Scheme:                 mgr.GetScheme(),
@@ -150,6 +152,7 @@ func main() {
 		KubeClient:             kubeClient,
 		SecurityDefaults:       securityDefaults,
 		CodeSourcePollInterval: codePollInterval,
+		FusionIndexURL:         fusionIndexURL,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveRun controller")
 		os.Exit(1)

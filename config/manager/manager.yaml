@@ -49,6 +49,9 @@ spec:
               port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
+          env:
+            - name: FUSION_INDEX_URL
+              value: ""
           resources:
             limits:
               cpu: 500m

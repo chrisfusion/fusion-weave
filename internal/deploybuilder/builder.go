@@ -90,6 +90,7 @@ func Build(
 	sec security.Defaults,
 	meta *indexclient.AppMetadata,
 	version string,
+	defaultIndexURL string,
 ) *appsv1.Deployment {
 	name := DeploymentName(chainName, stepName)
 	labels := map[string]string{
@@ -124,7 +125,7 @@ func Build(
 		}
 		indexURL := cs.IndexURL
 		if indexURL == "" {
-			indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+			indexURL = defaultIndexURL
 		}
 		loaderImage := cs.LoaderImage
 		if loaderImage == "" {
@@ -379,6 +380,7 @@ func BuildFromOverride(
 	runName, stepName, namespace string,
 	sec security.Defaults,
 	version string,
+	defaultIndexURL string,
 ) *appsv1.Deployment {
 	name := RunDeploymentName(runName, stepName)
 	labels := map[string]string{
@@ -406,7 +408,7 @@ func BuildFromOverride(
 	// Build codeSource init container using override artifact/tag.
 	indexURL := override.IndexURL
 	if indexURL == "" {
-		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+		indexURL = defaultIndexURL
 	}
 	mountPath := "/weave-code"
 	loaderImage := "fusion-code-loader:latest"

@@ -65,6 +65,10 @@ spec:
               value: {{ .Values.codeSource.pollInterval | quote }}
             - name: WORKLOAD_SECURITY_DEFAULTS
               value: {{ toJson .Values.workload.security | quote }}
+            {{- if .Values.codeSource.indexURL }}
+            - name: FUSION_INDEX_URL
+              value: {{ .Values.codeSource.indexURL | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- with .Values.containerSecurityContext }}
