@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+{{- $cs := .Values.codeSource | default dict -}}
+{{- $workload := .Values.workload | default dict }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -62,12 +64,16 @@ spec:
             periodSeconds: 10
           env:
             - name: CODE_SOURCE_POLL_INTERVAL
-              value: {{ .Values.codeSource.pollInterval | quote }}
+              value: {{ $cs.pollInterval | default "60s" | quote }}
             - name: WORKLOAD_SECURITY_DEFAULTS
-              value: {{ toJson .Values.workload.security | quote }}
-            {{- if .Values.codeSource.indexURL }}
+              value: {{ toJson ($workload.security | default dict) | quote }}
+            {{- if $cs.indexURL }}
             - name: FUSION_INDEX_URL
-              value: {{ .Values.codeSource.indexURL | quote }}
+              value: {{ $cs.indexURL | quote }}
+            {{- end }}
+            {{- if $cs.loaderImage }}
+            - name: LOADER_IMAGE
+              value: {{ $cs.loaderImage | quote }}
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

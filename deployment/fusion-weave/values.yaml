@@ -191,6 +191,12 @@ codeSource:
   # Maps to FUSION_INDEX_URL on the operator pod.
   # Leave empty to use the built-in default: http://fusion-index-backend.fusion.svc.cluster.local:8080
   indexURL: ""
+  # loaderImage is the cluster-wide default init container image for code-source deploy steps.
+  # Applied to any deploy step whose WeaveServiceTemplate does not set codeSource.loaderImage.
+  # Maps to LOADER_IMAGE on the operator pod.
+  # Recommended: set this to your registry push of Dockerfile.loader (e.g. ghcr.io/org/fusion-code-loader:0.2.1).
+  # Leave empty to use the built-in default: fusion-code-loader:latest
+  loaderImage: ""
 
 # Sample resources deployed alongside the operator.
 # Disabled by default — enable to get a working shared-storage demo chain.

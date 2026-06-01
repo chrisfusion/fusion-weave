@@ -91,6 +91,7 @@ func Build(
 	meta *indexclient.AppMetadata,
 	version string,
 	defaultIndexURL string,
+	defaultLoaderImage string,
 ) *appsv1.Deployment {
 	name := DeploymentName(chainName, stepName)
 	labels := map[string]string{
@@ -127,7 +128,13 @@ func Build(
 		if indexURL == "" {
 			indexURL = defaultIndexURL
 		}
+		if indexURL == "" {
+			indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+		}
 		loaderImage := cs.LoaderImage
+		if loaderImage == "" {
+			loaderImage = defaultLoaderImage
+		}
 		if loaderImage == "" {
 			loaderImage = "fusion-code-loader:latest"
 		}
@@ -381,6 +388,7 @@ func BuildFromOverride(
 	sec security.Defaults,
 	version string,
 	defaultIndexURL string,
+	defaultLoaderImage string,
 ) *appsv1.Deployment {
 	name := RunDeploymentName(runName, stepName)
 	labels := map[string]string{
@@ -410,8 +418,11 @@ func BuildFromOverride(
 	if indexURL == "" {
 		indexURL = defaultIndexURL
 	}
+	if indexURL == "" {
+		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+	}
 	mountPath := "/weave-code"
-	loaderImage := "fusion-code-loader:latest"
+	loaderImage := defaultLoaderImage
 	if tmpl.Spec.CodeSource != nil {
 		if tmpl.Spec.CodeSource.MountPath != "" {
 			mountPath = tmpl.Spec.CodeSource.MountPath
@@ -419,6 +430,9 @@ func BuildFromOverride(
 		if tmpl.Spec.CodeSource.LoaderImage != "" {
 			loaderImage = tmpl.Spec.CodeSource.LoaderImage
 		}
+	}
+	if loaderImage == "" {
+		loaderImage = "fusion-code-loader:latest"
 	}
 	volumes = append(volumes, corev1.Volume{
 		Name:         "weave-code",

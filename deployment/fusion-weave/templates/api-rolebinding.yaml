@@ -1,18 +1,20 @@
+{{- $api := .Values.api | default dict -}}
+{{- $apiSA := $api.serviceAccount | default dict -}}
+{{- if $api.enabled }}
 # SPDX-License-Identifier: GPL-3.0-or-later
-{{- if .Values.api.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ .Values.api.serviceAccount.name }}
+  name: {{ $apiSA.name }}
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ .Values.api.serviceAccount.name }}
+  name: {{ $apiSA.name }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.api.serviceAccount.name }}
+    name: {{ $apiSA.name }}
     namespace: {{ .Values.namespace }}
 {{- end }}

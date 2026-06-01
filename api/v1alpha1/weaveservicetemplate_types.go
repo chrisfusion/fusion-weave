@@ -93,8 +93,8 @@ type CodeSourceSpec struct {
 	MountPath string `json:"mountPath,omitempty"`
 
 	// LoaderImage is the init container image used to fetch and unpack the artifact.
-	// Defaults to the operator image — override the command to /loader.
-	// +kubebuilder:default="fusion-code-loader:latest"
+	// When empty the operator falls back to the LOADER_IMAGE env var,
+	// then to the built-in default fusion-code-loader:latest.
 	// +optional
 	LoaderImage string `json:"loaderImage,omitempty"`
 

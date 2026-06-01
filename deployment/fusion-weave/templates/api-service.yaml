@@ -1,5 +1,8 @@
+{{- $api := .Values.api | default dict -}}
+{{- $apiService := $api.service | default dict -}}
+{{- $apiMonitoring := $api.monitoring | default dict -}}
+{{- if $api.enabled }}
 # SPDX-License-Identifier: GPL-3.0-or-later
-{{- if .Values.api.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,16 +11,16 @@ metadata:
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.api.service.type }}
+  type: {{ $apiService.type }}
   selector:
     {{- include "fusion-weave.api.selectorLabels" . | nindent 4 }}
   ports:
     - name: http
-      port: {{ .Values.api.service.port }}
-      targetPort: {{ .Values.api.service.port }}
-    {{- if .Values.api.monitoring.enabled }}
+      port: {{ $apiService.port }}
+      targetPort: {{ $apiService.port }}
+    {{- if $apiMonitoring.enabled }}
     - name: metrics
-      port: {{ .Values.api.monitoring.metricsPort }}
-      targetPort: {{ .Values.api.monitoring.metricsPort }}
+      port: {{ $apiMonitoring.metricsPort }}
+      targetPort: {{ $apiMonitoring.metricsPort }}
     {{- end }}
 {{- end }}

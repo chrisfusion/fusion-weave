@@ -121,6 +121,7 @@ func main() {
 	}
 
 	fusionIndexURL := os.Getenv("FUSION_INDEX_URL")
+	loaderImage := os.Getenv("LOADER_IMAGE")
 	if err := (&controller.WeaveChainReconciler{
 		Client:                 mgr.GetClient(),
 		Scheme:                 mgr.GetScheme(),
@@ -153,6 +154,7 @@ func main() {
 		SecurityDefaults:       securityDefaults,
 		CodeSourcePollInterval: codePollInterval,
 		FusionIndexURL:         fusionIndexURL,
+		LoaderImage:            loaderImage,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveRun controller")
 		os.Exit(1)

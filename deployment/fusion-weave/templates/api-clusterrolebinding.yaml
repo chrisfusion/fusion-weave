@@ -1,4 +1,7 @@
-{{- if and .Values.api.enabled .Values.api.auth.saAuthEnabled }}
+{{- $api := .Values.api | default dict -}}
+{{- $apiAuth := $api.auth | default dict -}}
+{{- $apiSA := $api.serviceAccount | default dict -}}
+{{- if and $api.enabled $apiAuth.saAuthEnabled }}
 # SPDX-License-Identifier: GPL-3.0-or-later
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -12,6 +15,6 @@ roleRef:
   name: {{ .Release.Name }}-api-tokenreview
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.api.serviceAccount.name }}
+    name: {{ $apiSA.name }}
     namespace: {{ .Values.namespace }}
 {{- end }}

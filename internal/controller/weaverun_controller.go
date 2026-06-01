@@ -60,6 +60,7 @@ type WeaveRunReconciler struct {
 	SecurityDefaults       security.Defaults
 	CodeSourcePollInterval time.Duration
 	FusionIndexURL         string
+	LoaderImage            string
 }
 
 // resolveIndexURL returns the effective fusion-index base URL for a given
@@ -629,7 +630,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	}
 
 	// Upsert Deployment.
-	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL)
+	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment
@@ -1109,7 +1110,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	ownerRef := metav1.NewControllerRef(runWithGVK, weaveRunGVK)
 	deployName := deploybuilder.RunDeploymentName(runWithGVK.Name, stepSpec.Name)
 
-	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL)
+	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL, r.LoaderImage)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment

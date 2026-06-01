@@ -52,6 +52,8 @@ spec:
           env:
             - name: FUSION_INDEX_URL
               value: ""
+            - name: LOADER_IMAGE
+              value: ""
           resources:
             limits:
               cpu: 500m

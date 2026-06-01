@@ -80,10 +80,10 @@ spec:
                       then to the in-cluster default http://fusion-index-backend.fusion.svc.cluster.local:8080.
                     type: string
                   loaderImage:
-                    default: fusion-code-loader:latest
                     description: |-
                       LoaderImage is the init container image used to fetch and unpack the artifact.
-                      Defaults to the operator image — override the command to /loader.
+                      When empty the operator falls back to the LOADER_IMAGE env var,
+                      then to the built-in default fusion-code-loader:latest.
                     type: string
                   loaderImagePullPolicy:
                     description: |-
