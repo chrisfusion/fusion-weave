@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 {{- $cs := .Values.codeSource | default dict -}}
-{{- $workload := .Values.workload | default dict }}
+{{- $workload := .Values.workload | default dict -}}
+{{- $defaultWorkloadSecurity := dict
+    "podAnnotations" dict
+    "podLabels" dict
+    "podSecurityContext" (dict "runAsNonRoot" true "runAsUser" 65532 "fsGroup" 65532 "seccompProfile" (dict "type" "RuntimeDefault"))
+    "containerSecurityContext" (dict "allowPrivilegeEscalation" false "capabilities" (dict "drop" (list "ALL")) "readOnlyRootFilesystem" true) }}
+{{- $workloadSecurity := merge ($workload.security | default dict) $defaultWorkloadSecurity }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -66,7 +72,7 @@ spec:
             - name: CODE_SOURCE_POLL_INTERVAL
               value: {{ $cs.pollInterval | default "60s" | quote }}
             - name: WORKLOAD_SECURITY_DEFAULTS
-              value: {{ toJson ($workload.security | default dict) | quote }}
+              value: {{ toJson $workloadSecurity | quote }}
             {{- if $cs.indexURL }}
             - name: FUSION_INDEX_URL
               value: {{ $cs.indexURL | quote }}

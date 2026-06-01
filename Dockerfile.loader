@@ -7,9 +7,7 @@ WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY api/ api/
 COPY cmd/loader/ cmd/loader/
-COPY internal/ internal/
 
 RUN CGO_ENABLED=0 GOOS=linux go build -a -o loader ./cmd/loader/
 

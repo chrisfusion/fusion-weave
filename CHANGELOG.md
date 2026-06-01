@@ -10,6 +10,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - `Dockerfile.loader` — standalone build for the code-loader init container; produces a 5 MB distroless image containing only `/loader`. Push to your registry and set it as the cluster-wide default via `codeSource.loaderImage` in Helm.
 - `codeSource.loaderImage` Helm value and `LOADER_IMAGE` operator env var — cluster-wide default init container image for code-source deploy steps. Applied to any deploy step whose `WeaveServiceTemplate` does not set `codeSource.loaderImage` explicitly. Falls back to `fusion-code-loader:latest` when unset.
+- `WeaveRunStatus.Message` is now populated: chain-not-found, template-not-found, and invalid-DAG failures write a human-readable summary directly on the run; terminal runs aggregate all failed step messages into the run-level message so a single `kubectl get fr <name> -o jsonpath='{.status.message}'` shows the root cause.
+- `WeaveRunStepStatus.Message` now captures the actual job failure reason: Job condition message, container exit code, or — for init-container failures such as a bad `INDEX_URL` — the last 10 lines of the code-loader log, so loader errors (artifact not found, index unreachable) are visible in the step status without requiring `kubectl logs`.
 - `codeSource.indexURL` Helm value and `FUSION_INDEX_URL` operator env var — cluster-wide default base URL for fusion-index, applied to any deploy step whose `WeaveServiceTemplate` does not set `codeSource.indexURL` explicitly. Falls back to the built-in in-cluster default when unset.
 - `WeaveRun.spec.stepOverrides` — per-step deployment parameters for deploy-kind steps. When a step is listed in `stepOverrides`, the operator creates a run-owned Deployment named `<runName>-<stepName>` instead of the chain-owned `<chainName>-<stepName>`, enabling a single shared `WeaveChain` to serve many service instances with different artifact, tag, and ingress host.
 - `WeaveRun.status.activeDeployments` — tracks run-owned Deployments (created via `stepOverrides`) for code-source polling. Health monitoring and rolling restarts on artifact tag changes are handled by the run controller for these entries.
@@ -26,6 +28,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 - `cmd/loader/main.go` — loader previously fetched only the first file for an artifact version. It now downloads **all** files: archives (`.tar.gz`, `.tgz`, `.zip`) are unpacked into `mountPath`; plain files (`.py`, `.yaml`) are written directly. The `.version` file is always written from the index-resolved semver, never from `metadata.yaml` content.
 - `WeaveRunReconciler` — `r.Update` when adding/removing the `deploy-cleanup` finalizer replaced the entire spec, silently pruning `spec.stepOverrides` because the informer cache returns the unregistered field as nil in older operator builds. Changed both finalizer mutations to `r.Patch(ctx, &run, client.MergeFrom(...))` so only the metadata diff is sent and the spec is never touched.
+- Helm chart `api-*.yaml` templates and `deployment.yaml` — `--reuse-values` upgrades no longer panic with nil pointer errors when `api`, `codeSource`, or `workload` were absent from user-supplied values; `WORKLOAD_SECURITY_DEFAULTS` falls back to chart-defined security defaults instead of rendering `{}`.
+- `WeaveRunReconciler` — fatal user-input errors (missing chain/template, failed job/deploy-step creation, input data preparation failure) no longer silently requeue as Pattern A Go errors; they now fail the affected step or run with a descriptive `message` and structured log entry so the root cause is visible in both `kubectl get fr` and operator logs.
 
 ### Added
 - Structured HTTP access logging via `log/slog` with per-request `request_id` correlation; every request emits one INFO line with method, path, client IP, status, and latency.
@@ -33,8 +37,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Resource context fields (`kind`, `name`) on all Kubernetes operation error logs in API handlers, making 500 errors directly queryable by resource.
 - `LOG_LEVEL` env var (debug|info|warn|error, default info) and `LOG_FORMAT` env var (json|text, default json) for the API server HTTP layer, wired through Helm as `api.log.level` and `api.log.format`.
 - Operator controller phase-transition logs now include `run` and `phase` fields for structured querying; trigger reconciliation logs include `trigger` and `chain` fields.
-
-### Added
 - `podSecurityContext` and `containerSecurityContext` fields on `WeaveJobTemplateSpec` and `WeaveServiceTemplateSpec`. When set, these override the operator-wide `WORKLOAD_SECURITY_DEFAULTS` for pods/containers created from that template, allowing per-workload user configuration (e.g. `runAsUser: 101` for nginx). The init container on deploy steps with `codeSource` also inherits the template's `containerSecurityContext`.
 
 ### Fixed

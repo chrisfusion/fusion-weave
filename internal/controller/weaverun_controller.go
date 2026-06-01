@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -61,6 +62,147 @@ type WeaveRunReconciler struct {
 	CodeSourcePollInterval time.Duration
 	FusionIndexURL         string
 	LoaderImage            string
+}
+
+// failStepNow marks a step Failed with a message and records the completion time.
+func failStepNow(ss *weavev1alpha1.WeaveRunStepStatus, msg string) {
+	now := metav1.Now()
+	ss.Phase = weavev1alpha1.StepPhaseFailed
+	ss.Message = msg
+	ss.CompletionTime = &now
+}
+
+// jobFailureMessage builds a human-readable failure reason from the batch Job's
+// conditions and the first failed pod's termination state. For init-container
+// failures (e.g. the code-loader) it includes a tail of the container logs so
+// the root cause (bad INDEX_URL, missing artifact, etc.) is visible in status.
+func (r *WeaveRunReconciler) jobFailureMessage(ctx context.Context, namespace string, job *batchv1.Job) string {
+	// Collect Job-level condition message — used as base, not short-circuit.
+	condMsg := ""
+	for _, c := range job.Status.Conditions {
+		if c.Type == batchv1.JobFailed && c.Message != "" {
+			condMsg = c.Message
+			break
+		}
+	}
+
+	// List pods and check termination state for richer detail.
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels{"job-name": job.Name},
+	); err != nil {
+		if condMsg != "" {
+			return condMsg
+		}
+		return "job failed (pod details unavailable)"
+	}
+
+	for _, pod := range pods.Items {
+		// Init containers first — code-loader exits 1 on bad INDEX_URL / missing artifact.
+		for _, cs := range pod.Status.InitContainerStatuses {
+			if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+				tail := r.podLogTail(ctx, namespace, pod.Name, cs.Name, 10)
+				if tail != "" {
+					return fmt.Sprintf("init container %q exited %d:\n%s",
+						cs.Name, cs.State.Terminated.ExitCode, tail)
+				}
+				return fmt.Sprintf("init container %q exited %d", cs.Name, cs.State.Terminated.ExitCode)
+			}
+		}
+		// Main container — append exit code to condition message when available.
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+				detail := fmt.Sprintf("container %q exited %d", cs.Name, cs.State.Terminated.ExitCode)
+				if cs.State.Terminated.Message != "" {
+					detail += ": " + cs.State.Terminated.Message
+				}
+				if condMsg != "" {
+					return condMsg + " (" + detail + ")"
+				}
+				return detail
+			}
+		}
+	}
+	if condMsg != "" {
+		return condMsg
+	}
+	return "job failed"
+}
+
+// deploymentPodFailureMessage detects CrashLoopBackOff or repeated init-container
+// failures in a Deployment's pods. Returns a non-empty message when the failure
+// is confirmed (restartCount >= 2 or CrashLoopBackOff), empty when it's too early
+// to call. Used to surface loader errors (bad INDEX_URL etc.) for deploy steps.
+func (r *WeaveRunReconciler) deploymentPodFailureMessage(ctx context.Context, namespace string, deploy *appsv1.Deployment) string {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels(deploy.Spec.Selector.MatchLabels),
+	); err != nil {
+		return ""
+	}
+	for _, pod := range pods.Items {
+		// Init containers: report after ≥2 restarts to filter transient failures.
+		for _, cs := range pod.Status.InitContainerStatuses {
+			crashed := cs.RestartCount >= 2 ||
+				(cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff")
+			if !crashed {
+				continue
+			}
+			exitCode := containerExitCode(cs)
+			tail := r.podLogTail(ctx, namespace, pod.Name, cs.Name, 10)
+			if tail != "" {
+				return fmt.Sprintf("init container %q crash-looping (exit %d):\n%s", cs.Name, exitCode, tail)
+			}
+			return fmt.Sprintf("init container %q crash-looping (exit %d)", cs.Name, exitCode)
+		}
+		// Main containers.
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+				msg := fmt.Sprintf("container %q crash-looping (exit %d)", cs.Name, containerExitCode(cs))
+				if cs.State.Waiting.Message != "" {
+					msg += ": " + cs.State.Waiting.Message
+				}
+				return msg
+			}
+		}
+	}
+	return ""
+}
+
+// containerExitCode returns the exit code from the last or current termination state of a container.
+func containerExitCode(cs corev1.ContainerStatus) int32 {
+	if cs.LastTerminationState.Terminated != nil {
+		return cs.LastTerminationState.Terminated.ExitCode
+	}
+	if cs.State.Terminated != nil {
+		return cs.State.Terminated.ExitCode
+	}
+	return -1
+}
+
+// podLogTail returns the last `lines` lines from a container's log.
+// Tries the current run first; falls back to the previous run's logs (for
+// CrashLoopBackOff where the container is waiting, not terminated).
+// Returns an empty string on any error so callers can treat it as optional.
+func (r *WeaveRunReconciler) podLogTail(ctx context.Context, namespace, podName, container string, lines int64) string {
+	for _, previous := range []bool{false, true} {
+		stream, err := r.KubeClient.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+			Container: container,
+			TailLines: &lines,
+			Previous:  previous,
+		}).Stream(ctx)
+		if err != nil {
+			continue
+		}
+		data, _ := io.ReadAll(stream)
+		stream.Close()
+		if s := strings.TrimSpace(string(data)); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // resolveIndexURL returns the effective fusion-index base URL for a given
@@ -149,6 +291,14 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err := r.Get(ctx, types.NamespacedName{
 		Namespace: run.Namespace, Name: run.Spec.ChainRef.Name,
 	}, &chain); err != nil {
+		if errors.IsNotFound(err) {
+			msg := fmt.Sprintf("chain %q not found", run.Spec.ChainRef.Name)
+			logger.Error(err, "chain not found — failing run", "chain", run.Spec.ChainRef.Name)
+			run.Status.Phase = weavev1alpha1.RunPhaseFailed
+			run.Status.Message = msg
+			_ = r.Status().Patch(ctx, &run, base)
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("get chain: %w", err)
 	}
 
@@ -209,6 +359,14 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			if err := r.Get(ctx, types.NamespacedName{
 				Namespace: run.Namespace, Name: step.JobTemplateRef.Name,
 			}, &tmpl); err != nil {
+				if errors.IsNotFound(err) {
+					msg := fmt.Sprintf("job template %q not found (step %q)", step.JobTemplateRef.Name, step.Name)
+					logger.Error(err, "job template not found — failing run", "template", step.JobTemplateRef.Name, "step", step.Name)
+					run.Status.Phase = weavev1alpha1.RunPhaseFailed
+					run.Status.Message = msg
+					_ = r.Status().Patch(ctx, &run, base)
+					return ctrl.Result{}, nil
+				}
 				return ctrl.Result{}, fmt.Errorf("get template %q: %w", step.JobTemplateRef.Name, err)
 			}
 			templates[step.JobTemplateRef.Name] = &tmpl
@@ -224,6 +382,14 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			if err := r.Get(ctx, types.NamespacedName{
 				Namespace: run.Namespace, Name: step.ServiceTemplateRef.Name,
 			}, &tmpl); err != nil {
+				if errors.IsNotFound(err) {
+					msg := fmt.Sprintf("service template %q not found (step %q)", step.ServiceTemplateRef.Name, step.Name)
+					logger.Error(err, "service template not found — failing run", "template", step.ServiceTemplateRef.Name, "step", step.Name)
+					run.Status.Phase = weavev1alpha1.RunPhaseFailed
+					run.Status.Message = msg
+					_ = r.Status().Patch(ctx, &run, base)
+					return ctrl.Result{}, nil
+				}
 				return ctrl.Result{}, fmt.Errorf("get service template %q: %w", step.ServiceTemplateRef.Name, err)
 			}
 			serviceTemplates[step.ServiceTemplateRef.Name] = &tmpl
@@ -242,7 +408,12 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	graph, err := dag.BuildGraph(nodes)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("build dag: %w", err)
+		msg := fmt.Sprintf("invalid chain DAG: %v", err)
+		logger.Error(err, "DAG build failed — failing run", "run", run.Name)
+		run.Status.Phase = weavev1alpha1.RunPhaseFailed
+		run.Status.Message = msg
+		_ = r.Status().Patch(ctx, &run, base)
+		return ctrl.Result{}, nil
 	}
 
 	// C3 fix: build the working step map from value copies, not slice pointers.
@@ -340,7 +511,15 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					requeueAfter = 30 * time.Second
 				}
 			} else {
-				// Not available yet — requeue to poll.
+				// Not available yet — check if pods are crash-looping (e.g. bad loader URL).
+				if failMsg := r.deploymentPodFailureMessage(ctx, run.Namespace, &deploy); failMsg != "" {
+					logger.Error(fmt.Errorf("%s", failMsg), "deploy step pods crash-looping", "step", name, "run", run.Name)
+					failStepNow(&ss, failMsg)
+					stepStates[name] = dag.StepPhaseFailed
+					stepMap[name] = ss
+					continue
+				}
+				// Requeue to poll.
 				if requeueAfter == 0 || 10*time.Second < requeueAfter {
 					requeueAfter = 10 * time.Second
 				}
@@ -401,7 +580,11 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					continue
 				}
 				if writeErr := r.writeOutputToConfigMap(ctx, &run, runWithGVK, name, jsonData); writeErr != nil {
-					return ctrl.Result{}, fmt.Errorf("write output for step %q: %w", name, writeErr)
+					logger.Error(writeErr, "failed to write step output", "step", name, "run", run.Name)
+					failStepNow(&ss, fmt.Sprintf("failed to write output: %v", writeErr))
+					stepStates[name] = dag.StepPhaseFailed
+					stepMap[name] = ss
+					continue
 				}
 				ss.OutputCaptured = true
 			}
@@ -435,7 +618,12 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				backoff = tmpl.Spec.RetryPolicy.BackoffSeconds
 			}
 
+			failureReason := r.jobFailureMessage(ctx, run.Namespace, &job)
 			if ss.RetryCount < maxRetries {
+				logger.Info("step failed, scheduling retry",
+					"step", name, "run", run.Name,
+					"attempt", ss.RetryCount+1, "maxRetries", maxRetries,
+					"reason", failureReason)
 				_ = r.Delete(ctx, &job)
 				ss.RetryCount++
 				retryAt := metav1.NewTime(time.Now().Add(time.Duration(backoff) * time.Second))
@@ -447,10 +635,9 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					requeueAfter = time.Duration(backoff) * time.Second
 				}
 			} else {
-				now := metav1.Now()
-				ss.Phase = weavev1alpha1.StepPhaseFailed
-				ss.CompletionTime = &now
-				ss.Message = "max retries exhausted"
+				logger.Error(fmt.Errorf("%s", failureReason), "step failed permanently",
+					"step", name, "run", run.Name, "retries", ss.RetryCount)
+				failStepNow(&ss, failureReason)
 				stepStates[name] = dag.StepPhaseFailed
 			}
 			stepMap[name] = ss
@@ -485,15 +672,20 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					continue
 				}
 				override := findStepOverride(run.Spec.StepOverrides, stepName)
+				var syncErr error
 				if override != nil {
-					if err := r.syncDeployStepFromOverride(ctx, runWithGVK, stepSpec, svcTmpl, override, &ss); err != nil {
-						return ctrl.Result{}, fmt.Errorf("sync override deploy step %q: %w", stepName, err)
-					}
+					syncErr = r.syncDeployStepFromOverride(ctx, runWithGVK, stepSpec, svcTmpl, override, &ss)
 				} else {
-					if err := r.syncDeployStep(ctx, &chain, &run, stepSpec, svcTmpl, &ss); err != nil {
-						return ctrl.Result{}, fmt.Errorf("sync deploy step %q: %w", stepName, err)
-					}
+					syncErr = r.syncDeployStep(ctx, &chain, &run, stepSpec, svcTmpl, &ss)
 				}
+				if syncErr != nil {
+					logger.Error(syncErr, "deploy step failed to sync", "step", stepName, "run", run.Name)
+					failStepNow(&ss, syncErr.Error())
+					stepStates[stepName] = dag.StepPhaseFailed
+					stepMap[stepName] = ss
+					continue
+				}
+				logger.Info("deploy step starting", "step", stepName, "run", run.Name)
 				stepStates[stepName] = dag.StepPhaseRunning
 				// Poll every 10s while waiting for the Deployment to become Available.
 				if requeueAfter == 0 || 10*time.Second < requeueAfter {
@@ -514,7 +706,11 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				if len(stepSpec.ConsumesOutputFrom) > 0 {
 					cmName, ready, prepErr := r.prepareInputData(ctx, &run, stepSpec)
 					if prepErr != nil {
-						return ctrl.Result{}, fmt.Errorf("prepare input for step %q: %w", stepName, prepErr)
+						logger.Error(prepErr, "failed to prepare input data", "step", stepName, "run", run.Name)
+						failStepNow(&ss, fmt.Sprintf("failed to prepare input data: %v", prepErr))
+						stepStates[stepName] = dag.StepPhaseFailed
+						stepMap[stepName] = ss
+						continue
 					}
 					if !ready {
 						if requeueAfter == 0 || 2*time.Second < requeueAfter {
@@ -530,8 +726,13 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					*metav1.NewControllerRef(runWithGVK, weaveRunGVK),
 				}
 				if err := r.Create(ctx, job); err != nil && !errors.IsAlreadyExists(err) {
-					return ctrl.Result{}, fmt.Errorf("create job for step %q: %w", stepName, err)
+					logger.Error(err, "failed to create job", "step", stepName, "run", run.Name)
+					failStepNow(&ss, fmt.Sprintf("failed to create job: %v", err))
+					stepStates[stepName] = dag.StepPhaseFailed
+					stepMap[stepName] = ss
+					continue
 				}
+				logger.Info("job step starting", "step", stepName, "run", run.Name)
 				if ss.StartTime == nil {
 					now := metav1.Now()
 					ss.StartTime = &now
@@ -576,12 +777,24 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if advancement.RunSucceeded {
 			run.Status.Phase = weavev1alpha1.RunPhaseSucceeded
 			logger.Info("WeaveRun phase transition", "run", run.Name, "phase", "Succeeded")
-		} else if chain.Spec.FailurePolicy == weavev1alpha1.FailurePolicyStopAll {
-			run.Status.Phase = weavev1alpha1.RunPhaseStopped
-			logger.Info("WeaveRun phase transition", "run", run.Name, "phase", "Stopped")
 		} else {
-			run.Status.Phase = weavev1alpha1.RunPhaseFailed
-			logger.Info("WeaveRun phase transition", "run", run.Name, "phase", "Failed")
+			// Aggregate failed step messages into a run-level summary.
+			var parts []string
+			for _, ss := range run.Status.Steps {
+				if ss.Phase == weavev1alpha1.StepPhaseFailed && ss.Message != "" {
+					parts = append(parts, ss.Name+": "+ss.Message)
+				}
+			}
+			if len(parts) > 0 {
+				run.Status.Message = strings.Join(parts, "; ")
+			}
+			if chain.Spec.FailurePolicy == weavev1alpha1.FailurePolicyStopAll {
+				run.Status.Phase = weavev1alpha1.RunPhaseStopped
+				logger.Info("WeaveRun phase transition", "run", run.Name, "phase", "Stopped", "reason", run.Status.Message)
+			} else {
+				run.Status.Phase = weavev1alpha1.RunPhaseFailed
+				logger.Info("WeaveRun phase transition", "run", run.Name, "phase", "Failed", "reason", run.Status.Message)
+			}
 		}
 	}
 
