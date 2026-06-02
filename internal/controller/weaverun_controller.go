@@ -62,6 +62,7 @@ type WeaveRunReconciler struct {
 	CodeSourcePollInterval time.Duration
 	FusionIndexURL         string
 	LoaderImage            string
+	WritablePaths          []string
 }
 
 // failStepNow marks a step Failed with a message and records the completion time.
@@ -843,7 +844,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	}
 
 	// Upsert Deployment.
-	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage)
+	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment
@@ -1323,7 +1324,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	ownerRef := metav1.NewControllerRef(runWithGVK, weaveRunGVK)
 	deployName := deploybuilder.RunDeploymentName(runWithGVK.Name, stepSpec.Name)
 
-	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL, r.LoaderImage)
+	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment

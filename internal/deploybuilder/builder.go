@@ -6,6 +6,7 @@ package deploybuilder
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -79,6 +80,42 @@ func UpdateVersionEnvVar(containers []corev1.Container, version string) {
 	}
 }
 
+// writableVolumeName converts a mount path to a valid Kubernetes volume name
+// (DNS label: lowercase alphanumeric and hyphens, max 63 chars).
+// e.g. /home/nonroot → weave-w-home-nonroot
+// Returns "" for paths that produce an empty slug (e.g. "/").
+func writableVolumeName(path string) string {
+	clean := strings.ToLower(strings.TrimLeft(path, "/"))
+	var b strings.Builder
+	for _, r := range clean {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		return ""
+	}
+	const prefix = "weave-w-"
+	const maxSlug = 63 - len(prefix)
+	if len(slug) > maxSlug {
+		slug = strings.TrimRight(slug[:maxSlug], "-")
+	}
+	return prefix + slug
+}
+
+// hasVolume reports whether a volume with the given name is already in the slice.
+func hasVolume(volumes []corev1.Volume, name string) bool {
+	for _, v := range volumes {
+		if v.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Build constructs an apps/v1 Deployment for a deploy-kind step.
 // The Deployment is owned by the WeaveChain (not the WeaveRun) so it persists
 // across runs. The caller must set the OwnerReference.
@@ -92,6 +129,7 @@ func Build(
 	version string,
 	defaultIndexURL string,
 	defaultLoaderImage string,
+	writablePaths []string,
 ) *appsv1.Deployment {
 	name := DeploymentName(chainName, stepName)
 	labels := map[string]string{
@@ -142,10 +180,21 @@ func Build(
 			Name:         "weave-code",
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		})
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      "weave-code",
-			MountPath: mountPath,
-		})
+		mounts = append(mounts, corev1.VolumeMount{Name: "weave-code", MountPath: mountPath})
+		initMounts := []corev1.VolumeMount{{Name: "weave-code", MountPath: mountPath}}
+		for _, p := range writablePaths {
+			volName := writableVolumeName(p)
+			if volName == "" || hasVolume(volumes, volName) {
+				continue
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name:         volName,
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			})
+			vm := corev1.VolumeMount{Name: volName, MountPath: p}
+			mounts = append(mounts, vm)
+			initMounts = append(initMounts, vm)
+		}
 		loaderPullPolicy := cs.LoaderImagePullPolicy
 		if loaderPullPolicy == "" {
 			loaderPullPolicy = corev1.PullIfNotPresent
@@ -161,9 +210,7 @@ func Build(
 				{Name: "ARTIFACT_TAG", Value: cs.Tag},
 				{Name: "MOUNT_PATH", Value: mountPath},
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: "weave-code", MountPath: mountPath},
-			},
+			VolumeMounts:    initMounts,
 			SecurityContext: containerSC,
 		})
 	}
@@ -389,6 +436,7 @@ func BuildFromOverride(
 	version string,
 	defaultIndexURL string,
 	defaultLoaderImage string,
+	writablePaths []string,
 ) *appsv1.Deployment {
 	name := RunDeploymentName(runName, stepName)
 	labels := map[string]string{
@@ -438,10 +486,21 @@ func BuildFromOverride(
 		Name:         "weave-code",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	})
-	mounts = append(mounts, corev1.VolumeMount{
-		Name:      "weave-code",
-		MountPath: mountPath,
-	})
+	mounts = append(mounts, corev1.VolumeMount{Name: "weave-code", MountPath: mountPath})
+	initMounts := []corev1.VolumeMount{{Name: "weave-code", MountPath: mountPath}}
+	for _, p := range writablePaths {
+		volName := writableVolumeName(p)
+		if volName == "" || hasVolume(volumes, volName) {
+			continue
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         volName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		vm := corev1.VolumeMount{Name: volName, MountPath: p}
+		mounts = append(mounts, vm)
+		initMounts = append(initMounts, vm)
+	}
 	initContainers := []corev1.Container{{
 		Name:            "code-loader",
 		Image:           loaderImage,
@@ -453,7 +512,7 @@ func BuildFromOverride(
 			{Name: "ARTIFACT_TAG", Value: override.Tag},
 			{Name: "MOUNT_PATH", Value: mountPath},
 		},
-		VolumeMounts:    []corev1.VolumeMount{{Name: "weave-code", MountPath: mountPath}},
+		VolumeMounts:    initMounts,
 		SecurityContext: containerSC,
 	}}
 

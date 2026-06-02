@@ -81,6 +81,10 @@ spec:
             - name: LOADER_IMAGE
               value: {{ $cs.loaderImage | quote }}
             {{- end }}
+            {{- if $cs.writablePaths }}
+            - name: WRITABLE_PATHS
+              value: {{ join ":" $cs.writablePaths | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- with .Values.containerSecurityContext }}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -122,6 +123,14 @@ func main() {
 
 	fusionIndexURL := os.Getenv("FUSION_INDEX_URL")
 	loaderImage := os.Getenv("LOADER_IMAGE")
+	var writablePaths []string
+	if v := os.Getenv("WRITABLE_PATHS"); v != "" {
+		for _, p := range strings.Split(v, ":") {
+			if p = strings.TrimSpace(p); p != "" {
+				writablePaths = append(writablePaths, p)
+			}
+		}
+	}
 	if err := (&controller.WeaveChainReconciler{
 		Client:                 mgr.GetClient(),
 		Scheme:                 mgr.GetScheme(),
@@ -155,6 +164,7 @@ func main() {
 		CodeSourcePollInterval: codePollInterval,
 		FusionIndexURL:         fusionIndexURL,
 		LoaderImage:            loaderImage,
+		WritablePaths:          writablePaths,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveRun controller")
 		os.Exit(1)

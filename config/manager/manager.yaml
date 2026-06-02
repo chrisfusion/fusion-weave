@@ -54,6 +54,8 @@ spec:
               value: ""
             - name: LOADER_IMAGE
               value: ""
+            - name: WRITABLE_PATHS
+              value: "/tmp:/home/nonroot:/weave-work"
           resources:
             limits:
               cpu: 500m

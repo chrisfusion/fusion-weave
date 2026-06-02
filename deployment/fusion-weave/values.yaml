@@ -197,6 +197,15 @@ codeSource:
   # Recommended: set this to your registry push of Dockerfile.loader (e.g. ghcr.io/org/fusion-code-loader:0.2.1).
   # Leave empty to use the built-in default: fusion-code-loader:latest
   loaderImage: ""
+  # writablePaths is a list of paths that receive a writable emptyDir volume in every
+  # service container (both the code-loader init container and the main container) for
+  # deploy steps that have a codeSource. Required when readOnlyRootFilesystem: true is
+  # set in the workload security defaults so that runners can extract archives, install
+  # dependencies, and write cache/temp files.
+  writablePaths:
+    - /tmp
+    - /home/nonroot
+    - /weave-work
 
 # Sample resources deployed alongside the operator.
 # Disabled by default — enable to get a working shared-storage demo chain.

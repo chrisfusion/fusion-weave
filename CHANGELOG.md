@@ -8,6 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `codeSource.writablePaths` Helm value and `WRITABLE_PATHS` operator env var — configurable list of paths that receive a writable `emptyDir` volume in both the code-loader init container and the main service container for deploy steps with a `codeSource`. Defaults to `/tmp`, `/home/nonroot`, `/weave-work`. Required when `readOnlyRootFilesystem: true` so runners can extract archives, install dependencies, and write temp/cache files.
 - `Dockerfile.loader` — standalone build for the code-loader init container; produces a 5 MB distroless image containing only `/loader`. Push to your registry and set it as the cluster-wide default via `codeSource.loaderImage` in Helm.
 - `codeSource.loaderImage` Helm value and `LOADER_IMAGE` operator env var — cluster-wide default init container image for code-source deploy steps. Applied to any deploy step whose `WeaveServiceTemplate` does not set `codeSource.loaderImage` explicitly. Falls back to `fusion-code-loader:latest` when unset.
 - `WeaveRunStatus.Message` is now populated: chain-not-found, template-not-found, and invalid-DAG failures write a human-readable summary directly on the run; terminal runs aggregate all failed step messages into the run-level message so a single `kubectl get fr <name> -o jsonpath='{.status.message}'` shows the root cause.
