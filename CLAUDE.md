@@ -36,7 +36,12 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - `kubectl apply -f config/crd/bases/` — install/update CRDs directly on the cluster (faster than Helm during type iteration)
 - `make docker-build` — builds image inside minikube (`eval $(minikube docker-env)` is handled by the Makefile)
 - `make minikube-deploy` — raw-YAML deploy (config/ manifests, no Helm); use for quick iteration without chart overhead
-- `make test` — runs unit tests (DAG engine is pure Go, no envtest needed)
+- `make test` — runs `go test ./... -v`; covers dag, indexclient, and deploybuilder packages
+
+## Testing
+- Package naming: tests of unexported functions use `package <pkg>` (same package); exported-function tests use `package <pkg>_test` — match whatever the existing test file in that package uses.
+- HTTP layer tests (indexclient) use `net/http/httptest` + Go 1.22+ `http.NewServeMux()` with method-qualified routes (`"GET /api/v1/..."`) and path wildcards (`{id}`).
+- `sigs.k8s.io/yaml` v1.4.0: `port: "8080"` (quoted YAML string) causes a parse error — YAML string → JSON string → `encoding/json` cannot unmarshal into `int32`. Unknown fields are silently ignored.
 
 ## Key gotchas
 - controller-runtime v0.19.x required (not v0.18.x) — `MetricsBindAddress` renamed to `Metrics: metricsserver.Options{BindAddress: ...}`.
@@ -47,6 +52,8 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - Both `config/rbac/role.yaml` AND `deployment/fusion-weave/templates/role.yaml` are hand-maintained — `make generate` does NOT update either; edit both manually when CRD resource names or API group change.
 - Terminal runs (Succeeded/Failed/Stopped) that still hold the `weave.fusion-platform.io/deploy-cleanup` finalizer are re-reconciled once to run cleanup and remove the finalizer — then no further reconciliation. To test a controller fix, always fire a new run.
 - `dag.Advance` is called **twice** in `weaverun_controller.go`: once before the decisions loop (to get decisions) and once after (to recompute `RunComplete` using the post-decision `stepStates`). Do NOT remove the second call — without it, deploy steps cause the WeaveRun to complete immediately on first reconcile because the pre-decision states map is empty.
+- `deploybuilder.Build` (chain-owned) vs `BuildFromOverride` (run-owned) port asymmetry: `Build` writes `WEAVE_PORT` env var from `meta.Runner.Port` but never replaces container/service ports — those always come from `tmpl.Spec.Ports`. `BuildFromOverride` replaces ports entirely when `meta.Runner.Port > 0`. Do not assume they behave the same.
+- `runner.args` keys that collide with `tmpl.Spec.Env` entries produce silent duplicate env vars — the builder appends without deduplication. Template env comes first; runner.args appended after (runtime last-value-wins means runner.args effectively overrides).
 
 ## Deploy / test cycle on minikube
 ```
