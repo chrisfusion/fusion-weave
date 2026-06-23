@@ -12,7 +12,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-api
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 spec:
@@ -44,7 +44,7 @@ spec:
           command: ["/api-server"]
           env:
             - name: NAMESPACE
-              value: {{ .Values.namespace | quote }}
+              value: {{ .Release.Namespace | quote }}
             - name: AUTH_APIKEY
               value: {{ $apiAuth.apiKeyEnabled | toString | quote }}
             - name: AUTH_OIDC

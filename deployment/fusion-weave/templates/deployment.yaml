@@ -11,7 +11,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-operator
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 spec:
@@ -45,7 +45,7 @@ spec:
             - --metrics-bind-address=:{{ .Values.ports.metrics }}
             - --health-probe-bind-address=:{{ .Values.ports.health }}
             - --webhook-bind-address=:{{ .Values.ports.webhook }}
-            - --namespace={{ .Values.namespace }}
+            - --namespace={{ .Release.Namespace }}
             {{- if .Values.leaderElection.enabled }}
             - --leader-elect
             {{- end }}

@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# Namespace the operator manages.
-# All WeaveJobTemplate, WeaveChain, WeaveTrigger, and WeaveRun resources live here.
-namespace: fusion
 
 # Set to true to have the chart create the namespace.
 # Set to false if the namespace already exists (avoids Helm ownership conflicts).

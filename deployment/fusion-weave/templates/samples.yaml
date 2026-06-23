@@ -16,7 +16,7 @@ apiVersion: weave.fusion-platform.io/v1alpha1
 kind: WeaveJobTemplate
 metadata:
   name: shared-writer
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 spec:
@@ -44,7 +44,7 @@ apiVersion: weave.fusion-platform.io/v1alpha1
 kind: WeaveJobTemplate
 metadata:
   name: shared-reader
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 spec:
@@ -71,7 +71,7 @@ apiVersion: weave.fusion-platform.io/v1alpha1
 kind: WeaveChain
 metadata:
   name: shared-storage-demo
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 spec:
@@ -110,12 +110,12 @@ spec:
       runOnSuccess: true
 ---
 # WeaveTrigger: fire on demand via annotation
-# kubectl annotate weavetrigger shared-storage-demo-trigger fusion-platform.io/fire=true -n {{ .Values.namespace }}
+# kubectl annotate weavetrigger shared-storage-demo-trigger fusion-platform.io/fire=true -n {{ .Release.Namespace }}
 apiVersion: weave.fusion-platform.io/v1alpha1
 kind: WeaveTrigger
 metadata:
   name: shared-storage-demo-trigger
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 spec:
