@@ -1,0 +1,75 @@
+# MinIO for local development on minikube.
+#
+# IMPORTANT — use the community Helm chart, NOT the MinIO Operator chart.
+# The community chart (https://charts.min.io/) stays on the pre-AGPL MinIO
+# release and does not require the MinIO Operator.
+#
+# Install:
+#   helm repo add minio https://charts.min.io/
+#   helm repo update
+#   helm upgrade --install minio minio/minio \
+#     --namespace minio \
+#     -f deployment/local-dev/minio-values.yaml \
+#     --wait
+#
+# The chart repository still serves the old community chart.
+# Do NOT use "helm repo add minio https://operator.min.io/" — that is the Operator chart.
+
+# Pin to a known-good pre-AGPL release.
+image:
+  repository: quay.io/minio/minio
+  tag: RELEASE.2024-12-18T13-15-44Z
+  pullPolicy: IfNotPresent
+
+mcImage:
+  repository: quay.io/minio/mc
+  tag: RELEASE.2024-11-21T17-21-54Z
+  pullPolicy: IfNotPresent
+
+# Single-node for local dev.
+mode: standalone
+replicas: 1
+
+rootUser: minioadmin
+rootPassword: minioadmin
+
+persistence:
+  enabled: true
+  accessMode: ReadWriteOnce
+  size: 2Gi
+  # minikube default StorageClass; change if you use a different one.
+  storageClass: standard
+
+# Override the chart default of 16Gi — local dev needs far less.
+resources:
+  requests:
+    memory: 512Mi
+
+# Pre-create a default bucket.
+# For each additional bucket: mc mb local/<name> && mc event add local/<name> arn:minio:sqs::1:kafka --event put,delete,get
+buckets:
+  - name: weave-data
+    policy: none
+    purge: false
+
+# Kafka notification target pointing to Redpanda.
+# "1" is the target identifier used in the env var suffix.
+# The per-bucket event subscription is configured separately via mc event add (see INSTALL.md).
+environment:
+  MINIO_NOTIFY_KAFKA_ENABLE_1: "on"
+  # Redpanda internal Kafka listener (port 9093); cross-namespace FQDN required.
+  MINIO_NOTIFY_KAFKA_BROKERS_1: "redpanda-0.redpanda.redpanda.svc.cluster.local:9093"
+  MINIO_NOTIFY_KAFKA_TOPIC_1: "s3-events"
+  # 0 = unlimited queue; empty dir = no persistent queue (fine for dev).
+  MINIO_NOTIFY_KAFKA_QUEUE_LIMIT_1: "0"
+  MINIO_NOTIFY_KAFKA_QUEUE_DIR_1: ""
+
+service:
+  type: ClusterIP
+  port: 9000
+  nodePort: 32000
+
+consoleService:
+  type: ClusterIP
+  port: 9001
+  nodePort: 32001

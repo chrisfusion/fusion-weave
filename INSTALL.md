@@ -447,3 +447,168 @@ kubectl get svc fusion-weave-api -n fusion -o yaml | grep -A3 ports
 # Check with: kubectl get pod <pod-name> -n fusion -o jsonpath='{.spec.containers[*].name}'
 # Also verify the API server RBAC includes pods/log: re-apply config/rbac/api-role.yaml
 ```
+
+---
+
+## Local Development Dependencies: Redpanda (Kafka) + MinIO (S3)
+
+For local development and S3-event trigger testing, deploy a single-node Redpanda broker
+and a single-node MinIO instance in minikube. MinIO is pre-configured to forward all
+bucket events to the Redpanda Kafka topic `s3-events`.
+
+Redpanda lives in the `redpanda` namespace; MinIO lives in the `minio` namespace.
+Both are separate from the `fusion` operator namespace.
+
+### Prerequisites
+
+Add the required Helm repositories:
+
+```bash
+helm repo add redpanda https://charts.redpanda.com
+helm repo add minio    https://charts.min.io/   # community chart — pre-AGPL, no Operator required
+helm repo update
+```
+
+> **MinIO chart warning**: always use `https://charts.min.io/` (community chart).
+> Do **not** use `https://operator.min.io/` — that installs the MinIO Operator
+> which requires a Tenant CRD and is the new AGPL-licensed distribution.
+
+Install the MinIO client (`mc`) if not already present:
+
+```bash
+# macOS
+brew install minio/stable/mc
+
+# Linux (amd64)
+curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+chmod +x /usr/local/bin/mc
+```
+
+### 1. Create the namespaces
+
+```bash
+kubectl create namespace redpanda
+kubectl create namespace minio
+```
+
+### 2. Install Redpanda
+
+No operator required — the `redpanda/redpanda` chart deploys the broker directly.
+TLS and auth are disabled in the dev values file so cert-manager is not needed.
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda \
+  --namespace redpanda \
+  -f deployment/local-dev/redpanda-values.yaml \
+  --wait
+```
+
+Expected result: `redpanda-0` pod in `Running` state.
+
+```bash
+kubectl get pods -n redpanda
+# NAME         READY   STATUS    RESTARTS   AGE
+# redpanda-0   1/1     Running   0          60s
+```
+
+### 3. Create the s3-events topic
+
+```bash
+kubectl exec -n redpanda redpanda-0 -- \
+  rpk topic create s3-events --partitions 3 --replicas 1
+```
+
+> `auto_create_topics_enabled: true` is set in the values file so MinIO will
+> create the topic automatically on first publish if this step is skipped — but
+> creating it explicitly sets the desired partition count.
+
+### 4. Install MinIO
+
+```bash
+helm upgrade --install minio minio/minio \
+  --namespace minio \
+  -f deployment/local-dev/minio-values.yaml \
+  --wait
+```
+
+Expected result: `minio-*` pod in `Running` state and the `weave-data` bucket pre-created.
+
+```bash
+kubectl get pods -n minio
+# NAME                     READY   STATUS    RESTARTS   AGE
+# minio-6d9f8b7c4d-xxxxx   1/1     Running   0          30s
+```
+
+### 5. Configure bucket event notifications
+
+MinIO env vars (set above) define the Kafka *target*. The per-bucket *subscription* must
+be added with `mc`. Do this once per bucket — the subscription survives pod restarts.
+
+```bash
+# Expose MinIO API locally.
+kubectl port-forward svc/minio 9000:9000 -n minio &
+
+# Register the local MinIO alias.
+mc alias set local http://localhost:9000 minioadmin minioadmin
+
+# Subscribe the weave-data bucket to all events (put, delete, get).
+mc event add local/weave-data arn:minio:sqs::1:kafka --event put,delete,get
+
+# Confirm the subscription was registered.
+mc event ls local/weave-data
+# ARN: arn:minio:sqs::1:kafka
+# Event: s3:ObjectCreated:*,s3:ObjectRemoved:*,s3:ObjectAccessed:Get
+```
+
+**For each new bucket**, repeat the last two lines:
+
+```bash
+mc mb local/<bucket-name>
+mc event add local/<bucket-name> arn:minio:sqs::1:kafka --event put,delete,get
+```
+
+### 6. Verify end-to-end event flow
+
+Open two terminals:
+
+**Terminal 1** — watch the Kafka topic:
+```bash
+kubectl exec -n redpanda redpanda-0 -- \
+  rpk topic consume s3-events --offset start
+```
+
+**Terminal 2** — upload a test file:
+```bash
+echo "hello" | mc pipe local/weave-data/test.txt
+```
+
+You should see a JSON event appear in Terminal 1:
+
+```json
+{
+  "EventName": "s3:ObjectCreated:Put",
+  "Key": "weave-data/test.txt",
+  "Records": [{ "s3": { "bucket": { "name": "weave-data" }, "object": { "key": "test.txt" } } }]
+}
+```
+
+### 7. Access the MinIO console (optional)
+
+```bash
+kubectl port-forward svc/minio 9001:9001 -n minio &
+# Open http://localhost:9001  (user: minioadmin  password: minioadmin)
+```
+
+> If the console port is not exposed on the `minio` Service, port-forward directly
+> to the pod: `kubectl port-forward pod/$(kubectl get pod -n minio -l app=minio -o name | head -1) 9001:9001 -n minio`
+
+### Uninstall
+
+```bash
+helm uninstall redpanda -n redpanda
+helm uninstall minio    -n minio
+kubectl delete namespace redpanda minio
+# PVCs are NOT deleted by helm uninstall — remove manually if needed:
+kubectl delete pvc -n redpanda --all
+kubectl delete pvc -n minio    --all
+```

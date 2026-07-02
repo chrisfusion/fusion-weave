@@ -8,6 +8,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `WeaveTrigger` type `Kafka` — generic Kafka consumer trigger; fires one WeaveRun per message after applying configurable `eventFilter` (put/delete/get) and `bucketFilter` (bucket name list). Designed for S3/MinIO change events forwarded to Redpanda via `mc event add`.
+- `WeaveTriggerSpec.kafka` — config struct with `brokers`, `topic`, `consumerGroup`, optional `secretRef` (SASL: keys `username`/`password`/`mechanism`), `eventFilter`, `bucketFilter`, `maxConcurrentRuns` (throttle cap; 0 = unlimited). Paused via `spec.paused=true` (same field as BatchCron).
+- `internal/trigger.KafkaConsumer` — one goroutine per Kafka trigger using `segmentio/kafka-go`; filters applied before the fire channel; offsets committed on every message including filtered and throttled ones (skip policy).
+- `internal/trigger.parseS3EventEnvVars` — MinIO S3 event JSON → `S3_EVENT_NAME`, `S3_BUCKET`, `S3_KEY`, `S3_SIZE`, `S3_ETAG`, `S3_EVENT_TIME`, `S3_EVENT_JSON` env vars injected into every triggered WeaveRun.
+- `GET/POST/PUT/PATCH/DELETE /api/v1/kafkatriggers` — REST CRUD for Kafka triggers; body `{name, chainRef, kafka: {brokers, topic, consumerGroup, ...}}`.
+- Local dev infrastructure: single-node Redpanda (Kafka) + MinIO (S3) Helm values in `deployment/local-dev/`; pre-configured so MinIO forwards all bucket events (put/delete/get) to Redpanda topic `s3-events`. Setup documented in `INSTALL.md` under "Local Development Dependencies".
+
+- `WeaveTrigger` type `BatchCron` — a new trigger type that reads a list of jobs from a ConfigMap (key `jobs.yaml`) and schedules each job independently using its own cron expression. Each fired job creates a WeaveRun with `JOB_ID`, `JOB_NAME`, `JOB_TOPIC`, `JOB_MAINTAINER`, `JOB_STARTDATE`, `JOB_STARTTIME`, `JOB_SCHEDULE`, and `JOB_METADATA` (full metadata JSON) injected as env vars. Designed for thousands of concurrent jobs across multiple batch triggers without interfering with the existing `Cron` trigger.
+- `WeaveTriggerSpec.batchCron.jobsConfigMapRef` — references the ConfigMap containing the YAML job list for `BatchCron` triggers.
+- `WeaveTriggerSpec.paused` — suspends scheduling for any trigger type when `true`. Set via `POST /api/v1/batchtriggers/{name}/stop`.
+- `WeaveTriggerStatus.batchJobCount` and `.batchJobErrors` — live count of valid/invalid jobs loaded from the ConfigMap.
+- `internal/trigger.BatchCronScheduler` — isolated min-heap scheduler (O(log N) per fire, one goroutine per batch trigger). Separate from `CronScheduler`; no shared state.
+- `internal/trigger.ParseBatchJobs` — YAML parser for the batch job list; returns valid `BatchJob` entries and per-line `ValidationError` entries.
+- `POST /api/v1/batchtriggers` — create a batch trigger; body `{name, chainRef, jobs: "<yaml>"}`. Stores YAML in an auto-created ConfigMap owned by the trigger.
+- `PUT /api/v1/batchtriggers/{name}` — replace the jobs YAML for an existing batch trigger.
+- `POST /api/v1/batchtriggers/{name}/stop` — pause scheduling (`spec.paused=true`).
+- `POST /api/v1/batchtriggers/{name}/resume` — upload new YAML and resume scheduling.
+- `POST /api/v1/batchtriggers/validate` — validate jobs YAML; returns `{valid, errors: [{line, message}]}` without touching Kubernetes.
+- ConfigMap RBAC added to `config/rbac/api-role.yaml` and `deployment/fusion-weave/templates/api-role.yaml` for the API server.
 - `codeSource.writablePaths` Helm value and `WRITABLE_PATHS` operator env var — configurable list of paths that receive a writable `emptyDir` volume in both the code-loader init container and the main service container for deploy steps with a `codeSource`. Defaults to `/tmp`, `/home/nonroot`, `/weave-work`. Required when `readOnlyRootFilesystem: true` so runners can extract archives, install dependencies, and write temp/cache files.
 - `Dockerfile.loader` — standalone build for the code-loader init container; produces a 5 MB distroless image containing only `/loader`. Push to your registry and set it as the cluster-wide default via `codeSource.loaderImage` in Helm.
 - `codeSource.loaderImage` Helm value and `LOADER_IMAGE` operator env var — cluster-wide default init container image for code-source deploy steps. Applied to any deploy step whose `WeaveServiceTemplate` does not set `codeSource.loaderImage` explicitly. Falls back to `fusion-code-loader:latest` when unset.

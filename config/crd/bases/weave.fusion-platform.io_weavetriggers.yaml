@@ -58,6 +58,28 @@ spec:
           spec:
             description: WeaveTriggerSpec defines when and how a WeaveChain is instantiated.
             properties:
+              batchCron:
+                description: BatchCron configures the batch job list source (only
+                  used when Type=BatchCron).
+                properties:
+                  jobsConfigMapRef:
+                    description: JobsConfigMapRef names the ConfigMap whose "jobs.yaml"
+                      key contains the batch job list.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                required:
+                - jobsConfigMapRef
+                type: object
               chainRef:
                 description: ChainRef references the WeaveChain to instantiate on
                   each activation.
@@ -73,6 +95,62 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              kafka:
+                description: Kafka configures the Kafka consumer (only used when Type=Kafka).
+                properties:
+                  brokers:
+                    description: Brokers is the list of Kafka bootstrap broker addresses.
+                    items:
+                      type: string
+                    type: array
+                  bucketFilter:
+                    description: |-
+                      BucketFilter restricts which S3 bucket names trigger a run.
+                      Empty = all buckets.
+                    items:
+                      type: string
+                    type: array
+                  consumerGroup:
+                    description: ConsumerGroup is the Kafka consumer group ID.
+                    type: string
+                  eventFilter:
+                    description: |-
+                      EventFilter restricts which S3 event types trigger a run.
+                      Accepted values: "put", "delete", "get". Empty = all events.
+                    items:
+                      type: string
+                    type: array
+                  maxConcurrentRuns:
+                    description: |-
+                      MaxConcurrentRuns caps the number of active WeaveRuns for this trigger.
+                      Events received while the cap is reached are skipped (offset committed).
+                      0 = unlimited.
+                    type: integer
+                  secretRef:
+                    description: |-
+                      SecretRef optionally names a Secret containing SASL credentials.
+                      Keys: "username", "password", and optionally "mechanism" (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512).
+                      Defaults to PLAIN when mechanism is absent.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  topic:
+                    description: Topic is the Kafka topic to consume from.
+                    type: string
+                required:
+                - brokers
+                - consumerGroup
+                - topic
+                type: object
               parameterOverrides:
                 description: |-
                   ParameterOverrides are environment variables injected into every WeaveRun
@@ -193,6 +271,11 @@ spec:
                   - name
                   type: object
                 type: array
+              paused:
+                description: |-
+                  Paused suspends all scheduling for this trigger when true. Runs already in
+                  progress are unaffected; no new runs are created until Paused is set to false.
+                type: boolean
               schedule:
                 description: |-
                   Schedule is a standard cron expression (only used when Type=Cron).
@@ -204,6 +287,8 @@ spec:
                 - OnDemand
                 - Cron
                 - Webhook
+                - BatchCron
+                - Kafka
                 type: string
               webhook:
                 description: Webhook configures the HTTP endpoint (only used when
@@ -245,6 +330,14 @@ spec:
                 description: Active is true when the trigger is configured and accepting
                   activations.
                 type: boolean
+              batchJobCount:
+                description: BatchJobCount is the number of valid jobs loaded from
+                  the ConfigMap (BatchCron only).
+                type: integer
+              batchJobErrors:
+                description: BatchJobErrors is the number of job entries that failed
+                  validation (BatchCron only).
+                type: integer
               lastRunName:
                 description: LastRunName is the name of the most recently created
                   WeaveRun.

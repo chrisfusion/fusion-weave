@@ -1,0 +1,19 @@
+---
+- job: 
+    id: 00001
+    name: my-job
+    topic: testtopic
+    maintainer: Jon Doe
+    startdate: 2025-02-06
+    starttime: 15:17
+    schedule: 0 0 * * *
+    metadata:
+      {
+        "oldjsonkey": 1,
+        "oldjsonkey2": "test",
+        "testkeys": ["a","b"]
+      }
+- job:
+    id: 00002
+
+

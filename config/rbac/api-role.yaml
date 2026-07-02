@@ -22,6 +22,10 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["list"]
+  # ConfigMaps are used by the batchtriggers handler to store and update batch job lists.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Monitoring API — read batch Jobs, Deployments, Events, and pod logs.
   - apiGroups: ["batch"]
     resources: ["jobs"]

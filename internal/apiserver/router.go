@@ -39,6 +39,14 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitori
 		runHandler := handlers.NewRunHandler(c, cfg.Namespace)
 		registerCRUD(r, "/runs", runHandler)
 		r.Post("/runs/{name}/stop", runHandler.(*handlers.RunHandler).Stop)
+
+		batchHandler := handlers.NewBatchTriggerHandler(c, cfg.Namespace)
+		registerCRUD(r, "/batchtriggers", batchHandler)
+		r.Post("/batchtriggers/validate", batchHandler.Validate)
+		r.Post("/batchtriggers/{name}/stop", batchHandler.Stop)
+		r.Post("/batchtriggers/{name}/resume", batchHandler.Resume)
+
+		registerCRUD(r, "/kafkatriggers", handlers.NewKafkaTriggerHandler(c, cfg.Namespace))
 	})
 
 	// Monitoring API v1 — same auth/RBAC middleware; all endpoints are GET-only

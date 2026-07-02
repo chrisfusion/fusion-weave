@@ -9,7 +9,7 @@ import (
 )
 
 // WeaveTriggerType defines how a WeaveTrigger activates.
-// +kubebuilder:validation:Enum=OnDemand;Cron;Webhook
+// +kubebuilder:validation:Enum=OnDemand;Cron;Webhook;BatchCron;Kafka
 type WeaveTriggerType string
 
 const (
@@ -19,7 +19,52 @@ const (
 	TriggerCron WeaveTriggerType = "Cron"
 	// TriggerWebhook fires on an incoming HTTP POST request.
 	TriggerWebhook WeaveTriggerType = "Webhook"
+	// TriggerBatchCron fires individual jobs from a YAML job list stored in a ConfigMap.
+	// Each job carries its own cron schedule and metadata injected as env vars.
+	TriggerBatchCron WeaveTriggerType = "BatchCron"
+	// TriggerKafka fires on messages consumed from a Kafka topic.
+	TriggerKafka WeaveTriggerType = "Kafka"
 )
+
+// WeaveKafkaConfig configures a generic Kafka consumer trigger.
+type WeaveKafkaConfig struct {
+	// Brokers is the list of Kafka bootstrap broker addresses.
+	Brokers []string `json:"brokers"`
+
+	// Topic is the Kafka topic to consume from.
+	Topic string `json:"topic"`
+
+	// ConsumerGroup is the Kafka consumer group ID.
+	ConsumerGroup string `json:"consumerGroup"`
+
+	// SecretRef optionally names a Secret containing SASL credentials.
+	// Keys: "username", "password", and optionally "mechanism" (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512).
+	// Defaults to PLAIN when mechanism is absent.
+	// +optional
+	SecretRef *corev1.LocalObjectReference `json:"secretRef,omitempty"`
+
+	// EventFilter restricts which S3 event types trigger a run.
+	// Accepted values: "put", "delete", "get". Empty = all events.
+	// +optional
+	EventFilter []string `json:"eventFilter,omitempty"`
+
+	// BucketFilter restricts which S3 bucket names trigger a run.
+	// Empty = all buckets.
+	// +optional
+	BucketFilter []string `json:"bucketFilter,omitempty"`
+
+	// MaxConcurrentRuns caps the number of active WeaveRuns for this trigger.
+	// Events received while the cap is reached are skipped (offset committed).
+	// 0 = unlimited.
+	// +optional
+	MaxConcurrentRuns int `json:"maxConcurrentRuns,omitempty"`
+}
+
+// WeaveBatchCronConfig references the ConfigMap that holds the batch job list YAML.
+type WeaveBatchCronConfig struct {
+	// JobsConfigMapRef names the ConfigMap whose "jobs.yaml" key contains the batch job list.
+	JobsConfigMapRef corev1.LocalObjectReference `json:"jobsConfigMapRef"`
+}
 
 // WeaveWebhookConfig configures the HTTP trigger endpoint.
 type WeaveWebhookConfig struct {
@@ -51,6 +96,19 @@ type WeaveTriggerSpec struct {
 	// +optional
 	Webhook *WeaveWebhookConfig `json:"webhook,omitempty"`
 
+	// BatchCron configures the batch job list source (only used when Type=BatchCron).
+	// +optional
+	BatchCron *WeaveBatchCronConfig `json:"batchCron,omitempty"`
+
+	// Kafka configures the Kafka consumer (only used when Type=Kafka).
+	// +optional
+	Kafka *WeaveKafkaConfig `json:"kafka,omitempty"`
+
+	// Paused suspends all scheduling for this trigger when true. Runs already in
+	// progress are unaffected; no new runs are created until Paused is set to false.
+	// +optional
+	Paused bool `json:"paused,omitempty"`
+
 	// ParameterOverrides are environment variables injected into every WeaveRun
 	// created by this trigger, merged on top of per-step env vars.
 	// +optional
@@ -77,6 +135,14 @@ type WeaveTriggerStatus struct {
 	// PendingRuns holds names of WeaveRuns waiting for a concurrency slot.
 	// +optional
 	PendingRuns []string `json:"pendingRuns,omitempty"`
+
+	// BatchJobCount is the number of valid jobs loaded from the ConfigMap (BatchCron only).
+	// +optional
+	BatchJobCount int `json:"batchJobCount,omitempty"`
+
+	// BatchJobErrors is the number of job entries that failed validation (BatchCron only).
+	// +optional
+	BatchJobErrors int `json:"batchJobErrors,omitempty"`
 }
 
 // +kubebuilder:object:root=true

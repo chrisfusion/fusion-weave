@@ -76,9 +76,26 @@ func main() {
 	// Shared fire channel — webhook and cron write here, trigger controller reads.
 	fireCh := make(chan trigger.FireRequest, 64)
 
-	// Cron scheduler.
+	// Batch cron fire channel — BatchCronScheduler writes here, trigger controller reads.
+	// Sized for burst from many jobs firing simultaneously; individual ticks are dropped
+	// (not queued) when full, so the next cron tick catches up automatically.
+	batchFireCh := make(chan trigger.BatchFireRequest, 4096)
+
+	// Cron scheduler for standard Cron triggers.
 	cronScheduler := trigger.NewCronScheduler()
 	defer cronScheduler.Stop()
+
+	// Batch cron scheduler — isolated from the standard cron scheduler.
+	batchCronScheduler := trigger.NewBatchCronScheduler(batchFireCh)
+	defer batchCronScheduler.Stop()
+
+	// Kafka fire channel — KafkaConsumer writes here, trigger controller reads.
+	// Sized for burst; individual messages are dropped (offset committed) when full.
+	kafkaFireCh := make(chan trigger.KafkaFireRequest, 1024)
+
+	// Kafka consumer — one goroutine per Kafka trigger.
+	kafkaConsumer := trigger.NewKafkaConsumer(kafkaFireCh)
+	defer kafkaConsumer.Stop()
 
 	// Webhook server with token lookup via Kubernetes Secrets.
 	tokenLookup := func(ctx context.Context, namespace, triggerName string) (string, error) {
@@ -141,7 +158,9 @@ func main() {
 	}
 
 	triggerReconciler := controller.NewWeaveTriggerReconciler(
-		mgr.GetClient(), mgr.GetScheme(), cronScheduler, webhookServer, fireCh,
+		mgr.GetClient(), mgr.GetScheme(),
+		cronScheduler, batchCronScheduler, kafkaConsumer,
+		webhookServer, fireCh, batchFireCh, kafkaFireCh,
 	)
 	if err := triggerReconciler.SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveTrigger controller")
