@@ -308,6 +308,7 @@ func (r *WeaveTriggerReconciler) syncBatchCronSource(ctx context.Context, ft *we
 
 	// Update status with job counts.
 	patch := client.MergeFrom(ft.DeepCopy())
+	ft.Status.Active = true
 	ft.Status.BatchJobCount = len(jobs)
 	ft.Status.BatchJobErrors = len(errs)
 	if err := r.Status().Patch(ctx, ft, patch); err != nil {
