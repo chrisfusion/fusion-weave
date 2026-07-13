@@ -68,6 +68,14 @@ type WeaveJobTemplateSpec struct {
 	// allowPrivilegeEscalation, capabilities, etc.).
 	// +optional
 	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+
+	// CodeSource, when set, injects an init container that fetches and unpacks a
+	// versioned artifact from fusion-index before the job container starts, using
+	// the same code-loader mechanism as Deploy-kind steps. Unlike Deploy-kind
+	// steps, no polling or rolling-restart is needed: every WeaveRun creates a
+	// fresh Job pod, so the tag is resolved to its current version on every run.
+	// +optional
+	CodeSource *CodeSourceSpec `json:"codeSource,omitempty"`
 }
 
 // WeaveVolumeMount describes a secret or configmap mounted into the container.

@@ -219,6 +219,23 @@ func (r *WeaveRunReconciler) resolveIndexURL(explicit string) string {
 	return "http://fusion-index-backend.fusion.svc.cluster.local:8080"
 }
 
+// fetchCodeSourceMetadataBestEffort resolves cs.ArtifactName@cs.Tag against
+// fusion-index and returns the parsed metadata.yaml plus resolved version.
+// Failures are logged and treated as non-fatal: the caller proceeds with a nil
+// meta/empty version, so WEAVE_* env vars derived from metadata are simply
+// missing until a subsequent successful resolution (the code-loader init
+// container performs its own independent tag resolution at pod start
+// regardless of whether this lookup succeeds).
+func (r *WeaveRunReconciler) fetchCodeSourceMetadataBestEffort(ctx context.Context, cs *weavev1alpha1.CodeSourceSpec) (*indexclient.AppMetadata, string) {
+	idxURL := r.resolveIndexURL(cs.IndexURL)
+	meta, version, err := indexclient.FetchAppMetadataAndVersion(ctx, idxURL, cs.ArtifactName, cs.Tag)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "fetch codeSource metadata (best-effort)", "artifact", cs.ArtifactName, "tag", cs.Tag)
+		return nil, ""
+	}
+	return meta, version
+}
+
 // resolveAuthSecretName determines the Secret name injected via envFrom into
 // every step pod of this run. Priority: run override → trigger override →
 // chain default. A missing/deleted trigger falls back to the chain default
@@ -757,7 +774,17 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					inputConfigMap = cmName
 				}
 
-				job := jobbuilder.Build(tmpl, stepSpec, &run, ss.RetryCount, inputConfigMap, run.Status.SharedPVCName, r.SecurityDefaults, authSecretName)
+				// Fetch metadata and version best-effort so WEAVE_* env vars are
+				// populated. No polling is needed for Job steps: each run creates a
+				// fresh pod, so the code-loader init container re-resolves the tag
+				// on every run regardless of whether this lookup succeeds.
+				var csMeta *indexclient.AppMetadata
+				var csVersion string
+				if cs := tmpl.Spec.CodeSource; cs != nil {
+					csMeta, csVersion = r.fetchCodeSourceMetadataBestEffort(ctx, cs)
+				}
+
+				job := jobbuilder.Build(tmpl, stepSpec, &run, ss.RetryCount, inputConfigMap, run.Status.SharedPVCName, r.SecurityDefaults, authSecretName, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths)
 				job.OwnerReferences = []metav1.OwnerReference{
 					*metav1.NewControllerRef(runWithGVK, weaveRunGVK),
 				}
@@ -871,12 +898,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	var csMeta *indexclient.AppMetadata
 	var csVersion string
 	if cs := svcTmpl.Spec.CodeSource; cs != nil {
-		idxURL := r.resolveIndexURL(cs.IndexURL)
-		if m, v, metaErr := indexclient.FetchAppMetadataAndVersion(ctx, idxURL, cs.ArtifactName, cs.Tag); metaErr == nil {
-			csMeta, csVersion = m, v
-		} else {
-			log.FromContext(ctx).Error(metaErr, "fetch metadata for deploy step (best-effort)", "artifact", cs.ArtifactName)
-		}
+		csMeta, csVersion = r.fetchCodeSourceMetadataBestEffort(ctx, cs)
 	}
 
 	// Upsert Deployment.

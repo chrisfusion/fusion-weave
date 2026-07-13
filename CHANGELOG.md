@@ -8,6 +8,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `WeaveJobTemplateSpec.codeSource` — Job-kind steps can now reference a versioned fusion-index artifact by tag, using the same `CodeSourceSpec` and `code-loader` init container mechanism as Deploy-kind steps' `WeaveServiceTemplateSpec.codeSource`. No polling or rolling-restart is needed: every `WeaveRun` creates a fresh Job pod, so the tag is re-resolved to its current version on each run.
+- `internal/codesource` — new package holding the `WEAVE_*` env var construction and writable-path volume-naming helpers shared by `deploybuilder` and `jobbuilder`, relocated out of `deploybuilder` (previously private) to avoid duplicating the logic for the new Job-step codeSource support.
 - `WeaveChainSpec.authSecretRef` — optionally names a Secret injected via `envFrom` into every step pod (Job and Deploy kind) of the chain, so runner-side helper libraries (e.g. the `fusion-runner` Python `KeycloakAuth` helper) can read credential keys as env vars. Overridable per-trigger (`WeaveTriggerSpec.authSecretRefOverride`) and per-run (`WeaveRunSpec.authSecretRefOverride`); precedence is run > trigger > chain.
 - `WeaveTrigger` type `Kafka` — generic Kafka consumer trigger; fires one WeaveRun per message after applying configurable `eventFilter` (put/delete/get) and `bucketFilter` (bucket name list). Designed for S3/MinIO change events forwarded to Redpanda via `mc event add`.
 - `WeaveTriggerSpec.kafka` — config struct with `brokers`, `topic`, `consumerGroup`, optional `secretRef` (SASL: keys `username`/`password`/`mechanism`), `eventFilter`, `bucketFilter`, `maxConcurrentRuns` (throttle cap; 0 = unlimited). Paused via `spec.paused=true` (same field as BatchCron).

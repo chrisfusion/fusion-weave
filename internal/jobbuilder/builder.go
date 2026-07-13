@@ -13,6 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/codesource"
+	"fusion-platform.io/fusion-weave/internal/indexclient"
 	"fusion-platform.io/fusion-weave/internal/security"
 )
 
@@ -68,6 +70,10 @@ func JobName(runName, stepName string, retryCount int32) string {
 // value only when the step has ConsumesOutputFrom entries and the merged input
 // JSON key has already been written to the ConfigMap.
 // sec carries operator-wide security defaults applied to the pod and container.
+// csMeta/csVersion carry the best-effort fusion-index metadata.yaml lookup for
+// template.Spec.CodeSource (nil/empty when CodeSource is unset or the lookup
+// failed); defaultIndexURL/defaultLoaderImage/writablePaths mirror the
+// operator-wide fallbacks used by deploybuilder.Build.
 func Build(
 	template *weavev1alpha1.WeaveJobTemplate,
 	step *weavev1alpha1.WeaveChainStep,
@@ -77,6 +83,11 @@ func Build(
 	sharedPVCName string,
 	sec security.Defaults,
 	authSecretName string,
+	csMeta *indexclient.AppMetadata,
+	csVersion string,
+	defaultIndexURL string,
+	defaultLoaderImage string,
+	writablePaths []string,
 ) *batchv1.Job {
 	name := JobName(run.Name, step.Name, retryCount)
 	ns := run.Namespace
@@ -134,6 +145,72 @@ func Build(
 		containerSC = template.Spec.ContainerSecurityContext
 	}
 
+	// codeSource, when set, injects a code-loader init container that resolves
+	// the artifact tag to a concrete version and copies its files into a
+	// weave-code emptyDir before the job container starts — the same mechanism
+	// deploybuilder.Build uses for Deploy-kind steps. Because every WeaveRun
+	// creates a fresh Job pod, the tag is re-resolved on every run; no polling
+	// or rolling-restart is required.
+	var initContainers []corev1.Container
+	if cs := template.Spec.CodeSource; cs != nil {
+		mountPath := cs.MountPath
+		if mountPath == "" {
+			mountPath = "/weave-code"
+		}
+		indexURL := cs.IndexURL
+		if indexURL == "" {
+			indexURL = defaultIndexURL
+		}
+		if indexURL == "" {
+			indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+		}
+		loaderImage := cs.LoaderImage
+		if loaderImage == "" {
+			loaderImage = defaultLoaderImage
+		}
+		if loaderImage == "" {
+			loaderImage = "fusion-code-loader:latest"
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         "weave-code",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: "weave-code", MountPath: mountPath})
+		initMounts := []corev1.VolumeMount{{Name: "weave-code", MountPath: mountPath}}
+		for _, p := range writablePaths {
+			volName := codesource.WritableVolumeName(p)
+			if volName == "" || codesource.HasVolume(volumes, volName) {
+				continue
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name:         volName,
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			})
+			vm := corev1.VolumeMount{Name: volName, MountPath: p}
+			mounts = append(mounts, vm)
+			initMounts = append(initMounts, vm)
+		}
+		loaderPullPolicy := cs.LoaderImagePullPolicy
+		if loaderPullPolicy == "" {
+			loaderPullPolicy = corev1.PullIfNotPresent
+		}
+		initContainers = append(initContainers, corev1.Container{
+			Name:            "code-loader",
+			Image:           loaderImage,
+			ImagePullPolicy: loaderPullPolicy,
+			Command:         []string{"/loader"},
+			Env: []corev1.EnvVar{
+				{Name: "INDEX_URL", Value: indexURL},
+				{Name: "ARTIFACT_NAME", Value: cs.ArtifactName},
+				{Name: "ARTIFACT_TAG", Value: cs.Tag},
+				{Name: "MOUNT_PATH", Value: mountPath},
+			},
+			VolumeMounts:    initMounts,
+			SecurityContext: containerSC,
+		})
+		env = append(env, codesource.EnvVars(cs.ArtifactName, cs.Tag, csVersion, ns, mountPath, csMeta)...)
+	}
+
 	var envFrom []corev1.EnvFromSource
 	if authSecretName != "" {
 		envFrom = []corev1.EnvFromSource{
@@ -187,6 +264,7 @@ func Build(
 					RestartPolicy:      corev1.RestartPolicyNever,
 					ServiceAccountName: template.Spec.ServiceAccountName,
 					SecurityContext:    podSC,
+					InitContainers:     initContainers,
 					Containers: []corev1.Container{
 						{
 							Name:            "job",

@@ -62,6 +62,55 @@ spec:
                 items:
                   type: string
                 type: array
+              codeSource:
+                description: |-
+                  CodeSource, when set, injects an init container that fetches and unpacks a
+                  versioned artifact from fusion-index before the job container starts, using
+                  the same code-loader mechanism as Deploy-kind steps. Unlike Deploy-kind
+                  steps, no polling or rolling-restart is needed: every WeaveRun creates a
+                  fresh Job pod, so the tag is resolved to its current version on every run.
+                properties:
+                  artifactName:
+                    description: ArtifactName is the full artifact name in fusion-index
+                      (e.g. "org.myteam.myapp").
+                    minLength: 1
+                    type: string
+                  indexURL:
+                    description: |-
+                      IndexURL is the fusion-index base URL.
+                      When empty the operator falls back to the FUSION_INDEX_URL env var,
+                      then to the in-cluster default http://fusion-index-backend.fusion.svc.cluster.local:8080.
+                    type: string
+                  loaderImage:
+                    description: |-
+                      LoaderImage is the init container image used to fetch and unpack the artifact.
+                      When empty the operator falls back to the LOADER_IMAGE env var,
+                      then to the built-in default fusion-code-loader:latest.
+                    type: string
+                  loaderImagePullPolicy:
+                    description: |-
+                      LoaderImagePullPolicy controls when the init container image is pulled.
+                      Defaults to IfNotPresent. Use Never for locally built images in minikube.
+                    enum:
+                    - Always
+                    - Never
+                    - IfNotPresent
+                    type: string
+                  mountPath:
+                    default: /weave-code
+                    description: MountPath is the directory inside the main container
+                      where unpacked code is available.
+                    type: string
+                  tag:
+                    description: |-
+                      Tag is the mutable tag to track (e.g. "stable", "latest").
+                      The init container resolves the tag to a concrete version on every pod start.
+                    minLength: 1
+                    type: string
+                required:
+                - artifactName
+                - tag
+                type: object
               command:
                 description: Command overrides the container entrypoint.
                 items:

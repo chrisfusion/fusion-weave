@@ -5,8 +5,6 @@ package deploybuilder
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/codesource"
 	"fusion-platform.io/fusion-weave/internal/indexclient"
 	"fusion-platform.io/fusion-weave/internal/security"
 )
@@ -26,40 +25,6 @@ const (
 	ChainLabel = "fusion-platform.io/chain"
 	StepLabel  = "fusion-platform.io/step"
 )
-
-// weaveEnvVars returns the standard WEAVE_* env vars injected into every
-// codeSource container, plus any runner.args from metadata as plain env vars.
-// It is the single source of truth for what the runner sees at startup.
-func weaveEnvVars(artifactName, tag, version, namespace, mountPath string, meta *indexclient.AppMetadata) []corev1.EnvVar {
-	vars := []corev1.EnvVar{
-		{Name: "WEAVE_ARTIFACT", Value: artifactName},
-		{Name: "WEAVE_TAG", Value: tag},
-		{Name: "WEAVE_VERSION", Value: version},
-		{Name: "WEAVE_NAMESPACE", Value: namespace},
-		{Name: "WEAVE_MOUNT_PATH", Value: mountPath},
-	}
-	if meta != nil {
-		if meta.Runner.Port > 0 {
-			vars = append(vars, corev1.EnvVar{Name: "WEAVE_PORT", Value: strconv.Itoa(int(meta.Runner.Port))})
-		}
-		if meta.Ingress.PathPrefix != "" {
-			vars = append(vars, corev1.EnvVar{Name: "WEAVE_INGRESS_PATH_PREFIX", Value: meta.Ingress.PathPrefix})
-		}
-		if meta.Runner.Type != "" {
-			vars = append(vars, corev1.EnvVar{Name: "WEAVE_RUNNER_TYPE", Value: meta.Runner.Type})
-		}
-		if meta.Runner.BuilderImage != "" {
-			vars = append(vars, corev1.EnvVar{Name: "WEAVE_BUILDER_IMAGE", Value: meta.Runner.BuilderImage})
-		}
-		if meta.Maintainer != "" {
-			vars = append(vars, corev1.EnvVar{Name: "WEAVE_MAINTAINER", Value: meta.Maintainer})
-		}
-		for k, v := range meta.Runner.Args {
-			vars = append(vars, corev1.EnvVar{Name: k, Value: v})
-		}
-	}
-	return vars
-}
 
 // UpdateVersionEnvVar replaces WEAVE_VERSION on every container in the slice,
 // or appends it when not present. Call this alongside the restartedAt annotation
@@ -78,42 +43,6 @@ func UpdateVersionEnvVar(containers []corev1.Container, version string) {
 			containers[i].Env = append(containers[i].Env, corev1.EnvVar{Name: "WEAVE_VERSION", Value: version})
 		}
 	}
-}
-
-// writableVolumeName converts a mount path to a valid Kubernetes volume name
-// (DNS label: lowercase alphanumeric and hyphens, max 63 chars).
-// e.g. /home/nonroot → weave-w-home-nonroot
-// Returns "" for paths that produce an empty slug (e.g. "/").
-func writableVolumeName(path string) string {
-	clean := strings.ToLower(strings.TrimLeft(path, "/"))
-	var b strings.Builder
-	for _, r := range clean {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			b.WriteRune(r)
-		} else {
-			b.WriteRune('-')
-		}
-	}
-	slug := strings.Trim(b.String(), "-")
-	if slug == "" {
-		return ""
-	}
-	const prefix = "weave-w-"
-	const maxSlug = 63 - len(prefix)
-	if len(slug) > maxSlug {
-		slug = strings.TrimRight(slug[:maxSlug], "-")
-	}
-	return prefix + slug
-}
-
-// hasVolume reports whether a volume with the given name is already in the slice.
-func hasVolume(volumes []corev1.Volume, name string) bool {
-	for _, v := range volumes {
-		if v.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 // Build constructs an apps/v1 Deployment for a deploy-kind step.
@@ -184,8 +113,8 @@ func Build(
 		mounts = append(mounts, corev1.VolumeMount{Name: "weave-code", MountPath: mountPath})
 		initMounts := []corev1.VolumeMount{{Name: "weave-code", MountPath: mountPath}}
 		for _, p := range writablePaths {
-			volName := writableVolumeName(p)
-			if volName == "" || hasVolume(volumes, volName) {
+			volName := codesource.WritableVolumeName(p)
+			if volName == "" || codesource.HasVolume(volumes, volName) {
 				continue
 			}
 			volumes = append(volumes, corev1.Volume{
@@ -223,7 +152,7 @@ func Build(
 		if mountPath == "" {
 			mountPath = "/weave-code"
 		}
-		env = append(env, weaveEnvVars(cs.ArtifactName, cs.Tag, version, namespace, mountPath, meta)...)
+		env = append(env, codesource.EnvVars(cs.ArtifactName, cs.Tag, version, namespace, mountPath, meta)...)
 	}
 
 	var envFrom []corev1.EnvFromSource
@@ -499,8 +428,8 @@ func BuildFromOverride(
 	mounts = append(mounts, corev1.VolumeMount{Name: "weave-code", MountPath: mountPath})
 	initMounts := []corev1.VolumeMount{{Name: "weave-code", MountPath: mountPath}}
 	for _, p := range writablePaths {
-		volName := writableVolumeName(p)
-		if volName == "" || hasVolume(volumes, volName) {
+		volName := codesource.WritableVolumeName(p)
+		if volName == "" || codesource.HasVolume(volumes, volName) {
 			continue
 		}
 		volumes = append(volumes, corev1.Volume{
@@ -529,7 +458,7 @@ func BuildFromOverride(
 	// Merge env: template env first, then standard WEAVE_* vars + runner.args from metadata.
 	env := make([]corev1.EnvVar, len(tmpl.Spec.Env))
 	copy(env, tmpl.Spec.Env)
-	env = append(env, weaveEnvVars(override.ArtifactName, override.Tag, version, namespace, mountPath, meta)...)
+	env = append(env, codesource.EnvVars(override.ArtifactName, override.Tag, version, namespace, mountPath, meta)...)
 
 	// Resources: metadata wins when non-empty, otherwise fall back to template.
 	resources := tmpl.Spec.Resources

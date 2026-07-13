@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 fusion-platform contributors
+
+// Package codesource holds helpers shared by deploybuilder and jobbuilder for
+// injecting a fusion-index code-loader init container into a pod spec.
+package codesource
+
+import (
+	"strconv"
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"fusion-platform.io/fusion-weave/internal/indexclient"
+)
+
+// EnvVars returns the standard WEAVE_* env vars injected into every
+// codeSource container, plus any runner.args from metadata as plain env vars.
+// It is the single source of truth for what the runner sees at startup.
+func EnvVars(artifactName, tag, version, namespace, mountPath string, meta *indexclient.AppMetadata) []corev1.EnvVar {
+	vars := []corev1.EnvVar{
+		{Name: "WEAVE_ARTIFACT", Value: artifactName},
+		{Name: "WEAVE_TAG", Value: tag},
+		{Name: "WEAVE_VERSION", Value: version},
+		{Name: "WEAVE_NAMESPACE", Value: namespace},
+		{Name: "WEAVE_MOUNT_PATH", Value: mountPath},
+	}
+	if meta != nil {
+		if meta.Runner.Port > 0 {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_PORT", Value: strconv.Itoa(int(meta.Runner.Port))})
+		}
+		if meta.Ingress.PathPrefix != "" {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_INGRESS_PATH_PREFIX", Value: meta.Ingress.PathPrefix})
+		}
+		if meta.Runner.Type != "" {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_RUNNER_TYPE", Value: meta.Runner.Type})
+		}
+		if meta.Runner.BuilderImage != "" {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_BUILDER_IMAGE", Value: meta.Runner.BuilderImage})
+		}
+		if meta.Maintainer != "" {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_MAINTAINER", Value: meta.Maintainer})
+		}
+		for k, v := range meta.Runner.Args {
+			vars = append(vars, corev1.EnvVar{Name: k, Value: v})
+		}
+	}
+	return vars
+}
+
+// WritableVolumeName converts a mount path to a valid Kubernetes volume name
+// (DNS label: lowercase alphanumeric and hyphens, max 63 chars).
+// e.g. /home/nonroot → weave-w-home-nonroot
+// Returns "" for paths that produce an empty slug (e.g. "/").
+func WritableVolumeName(path string) string {
+	clean := strings.ToLower(strings.TrimLeft(path, "/"))
+	var b strings.Builder
+	for _, r := range clean {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		return ""
+	}
+	const prefix = "weave-w-"
+	const maxSlug = 63 - len(prefix)
+	if len(slug) > maxSlug {
+		slug = strings.TrimRight(slug[:maxSlug], "-")
+	}
+	return prefix + slug
+}
+
+// HasVolume reports whether a volume with the given name is already in the slice.
+func HasVolume(volumes []corev1.Volume, name string) bool {
+	for _, v := range volumes {
+		if v.Name == name {
+			return true
+		}
+	}
+	return false
+}
