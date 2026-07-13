@@ -55,6 +55,26 @@ spec:
           spec:
             description: WeaveChainSpec defines the DAG topology and execution policy.
             properties:
+              authSecretRef:
+                description: |-
+                  AuthSecretRef optionally names a Secret injected via envFrom into every
+                  step pod of this chain (Job and Deploy kind alike). Its keys become
+                  environment variables that runner-side helper libraries (e.g. the
+                  Python KeycloakAuth helper) use to obtain access tokens. Overridable
+                  per-trigger (WeaveTriggerSpec.AuthSecretRefOverride) or per-run
+                  (WeaveRunSpec.AuthSecretRefOverride).
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               concurrencyPolicy:
                 default: Wait
                 description: |-

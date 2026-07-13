@@ -130,6 +130,7 @@ func Build(
 	defaultIndexURL string,
 	defaultLoaderImage string,
 	writablePaths []string,
+	authSecretName string,
 ) *appsv1.Deployment {
 	name := DeploymentName(chainName, stepName)
 	labels := map[string]string{
@@ -225,12 +226,20 @@ func Build(
 		env = append(env, weaveEnvVars(cs.ArtifactName, cs.Tag, version, namespace, mountPath, meta)...)
 	}
 
+	var envFrom []corev1.EnvFromSource
+	if authSecretName != "" {
+		envFrom = []corev1.EnvFromSource{
+			{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: authSecretName}}},
+		}
+	}
+
 	container := corev1.Container{
 		Name:            "service",
 		Image:           tmpl.Spec.Image,
 		Command:         tmpl.Spec.Command,
 		Args:            tmpl.Spec.Args,
 		Env:             env,
+		EnvFrom:         envFrom,
 		Resources:       tmpl.Spec.Resources,
 		VolumeMounts:    mounts,
 		LivenessProbe:   tmpl.Spec.LivenessProbe,
@@ -437,6 +446,7 @@ func BuildFromOverride(
 	defaultIndexURL string,
 	defaultLoaderImage string,
 	writablePaths []string,
+	authSecretName string,
 ) *appsv1.Deployment {
 	name := RunDeploymentName(runName, stepName)
 	labels := map[string]string{
@@ -547,12 +557,20 @@ func BuildFromOverride(
 		})
 	}
 
+	var envFrom []corev1.EnvFromSource
+	if authSecretName != "" {
+		envFrom = []corev1.EnvFromSource{
+			{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: authSecretName}}},
+		}
+	}
+
 	container := corev1.Container{
 		Name:            "service",
 		Image:           tmpl.Spec.Image,
 		Command:         tmpl.Spec.Command,
 		Args:            tmpl.Spec.Args,
 		Env:             env,
+		EnvFrom:         envFrom,
 		Resources:       resources,
 		VolumeMounts:    mounts,
 		Ports:           containerPorts,

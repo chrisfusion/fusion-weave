@@ -58,6 +58,23 @@ spec:
           spec:
             description: WeaveTriggerSpec defines when and how a WeaveChain is instantiated.
             properties:
+              authSecretRefOverride:
+                description: |-
+                  AuthSecretRefOverride overrides WeaveChainSpec.AuthSecretRef for every
+                  run created by this trigger. Takes precedence over the chain default;
+                  yields to WeaveRunSpec.AuthSecretRefOverride on the resulting run.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               batchCron:
                 description: BatchCron configures the batch job list source (only
                   used when Type=BatchCron).

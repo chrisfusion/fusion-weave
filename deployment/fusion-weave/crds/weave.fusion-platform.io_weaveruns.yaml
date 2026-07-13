@@ -55,6 +55,23 @@ spec:
             description: WeaveRunSpec defines the immutable parameters of one chain
               execution.
             properties:
+              authSecretRefOverride:
+                description: |-
+                  AuthSecretRefOverride overrides WeaveChainSpec.AuthSecretRef (and any
+                  WeaveTriggerSpec.AuthSecretRefOverride) for this run only. Injected via
+                  envFrom into every step pod of this run.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               chainRef:
                 description: ChainRef is the WeaveChain this run executes. Immutable
                   after creation.

@@ -219,6 +219,34 @@ func (r *WeaveRunReconciler) resolveIndexURL(explicit string) string {
 	return "http://fusion-index-backend.fusion.svc.cluster.local:8080"
 }
 
+// resolveAuthSecretName determines the Secret name injected via envFrom into
+// every step pod of this run. Priority: run override → trigger override →
+// chain default. A missing/deleted trigger falls back to the chain default
+// rather than failing the run.
+func (r *WeaveRunReconciler) resolveAuthSecretName(ctx context.Context, run *weavev1alpha1.WeaveRun, chain *weavev1alpha1.WeaveChain) (string, error) {
+	if run.Spec.AuthSecretRefOverride != nil {
+		return run.Spec.AuthSecretRefOverride.Name, nil
+	}
+
+	if run.Spec.TriggerRef != nil {
+		var trigger weavev1alpha1.WeaveTrigger
+		err := r.Get(ctx, types.NamespacedName{
+			Namespace: run.Namespace, Name: run.Spec.TriggerRef.Name,
+		}, &trigger)
+		switch {
+		case err == nil && trigger.Spec.AuthSecretRefOverride != nil:
+			return trigger.Spec.AuthSecretRefOverride.Name, nil
+		case err != nil && !errors.IsNotFound(err):
+			return "", fmt.Errorf("get trigger: %w", err)
+		}
+	}
+
+	if chain.Spec.AuthSecretRef != nil {
+		return chain.Spec.AuthSecretRef.Name, nil
+	}
+	return "", nil
+}
+
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weaveruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weaveruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -338,6 +366,13 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	} else if restarted {
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Resolve the effective auth Secret injected via envFrom into every step pod:
+	// run override > trigger override > chain default.
+	authSecretName, err := r.resolveAuthSecretName(ctx, &run, &chain)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolve auth secret: %w", err)
 	}
 
 	// Load all referenced job templates (deduplicated), skipping deploy-kind steps.
@@ -675,9 +710,9 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				override := findStepOverride(run.Spec.StepOverrides, stepName)
 				var syncErr error
 				if override != nil {
-					syncErr = r.syncDeployStepFromOverride(ctx, runWithGVK, stepSpec, svcTmpl, override, &ss)
+					syncErr = r.syncDeployStepFromOverride(ctx, runWithGVK, stepSpec, svcTmpl, override, &ss, authSecretName)
 				} else {
-					syncErr = r.syncDeployStep(ctx, &chain, &run, stepSpec, svcTmpl, &ss)
+					syncErr = r.syncDeployStep(ctx, &chain, &run, stepSpec, svcTmpl, &ss, authSecretName)
 				}
 				if syncErr != nil {
 					logger.Error(syncErr, "deploy step failed to sync", "step", stepName, "run", run.Name)
@@ -722,7 +757,7 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					inputConfigMap = cmName
 				}
 
-				job := jobbuilder.Build(tmpl, stepSpec, &run, ss.RetryCount, inputConfigMap, run.Status.SharedPVCName, r.SecurityDefaults)
+				job := jobbuilder.Build(tmpl, stepSpec, &run, ss.RetryCount, inputConfigMap, run.Status.SharedPVCName, r.SecurityDefaults, authSecretName)
 				job.OwnerReferences = []metav1.OwnerReference{
 					*metav1.NewControllerRef(runWithGVK, weaveRunGVK),
 				}
@@ -819,6 +854,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	stepSpec *weavev1alpha1.WeaveChainStep,
 	svcTmpl *weavev1alpha1.WeaveServiceTemplate,
 	ss *weavev1alpha1.WeaveRunStepStatus,
+	authSecretName string,
 ) error {
 	chainWithGVK := chain.DeepCopy()
 	chainWithGVK.TypeMeta = metav1.TypeMeta{
@@ -844,7 +880,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	}
 
 	// Upsert Deployment.
-	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths)
+	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, authSecretName)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment
@@ -1314,6 +1350,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	svcTmpl *weavev1alpha1.WeaveServiceTemplate,
 	override *weavev1alpha1.WeaveRunStepOverride,
 	ss *weavev1alpha1.WeaveRunStepStatus,
+	authSecretName string,
 ) error {
 	indexURL := r.resolveIndexURL(override.IndexURL)
 	meta, csVersion, err := indexclient.FetchAppMetadataAndVersion(ctx, indexURL, override.ArtifactName, override.Tag)
@@ -1324,7 +1361,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	ownerRef := metav1.NewControllerRef(runWithGVK, weaveRunGVK)
 	deployName := deploybuilder.RunDeploymentName(runWithGVK.Name, stepSpec.Name)
 
-	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths)
+	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, authSecretName)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment

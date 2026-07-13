@@ -76,6 +76,7 @@ func Build(
 	inputConfigMap string,
 	sharedPVCName string,
 	sec security.Defaults,
+	authSecretName string,
 ) *batchv1.Job {
 	name := JobName(run.Name, step.Name, retryCount)
 	ns := run.Namespace
@@ -133,6 +134,13 @@ func Build(
 		containerSC = template.Spec.ContainerSecurityContext
 	}
 
+	var envFrom []corev1.EnvFromSource
+	if authSecretName != "" {
+		envFrom = []corev1.EnvFromSource{
+			{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: authSecretName}}},
+		}
+	}
+
 	parallelism := template.Spec.Parallelism
 	completions := template.Spec.Completions
 
@@ -186,6 +194,7 @@ func Build(
 							Command:         template.Spec.Command,
 							Args:            template.Spec.Args,
 							Env:             env,
+							EnvFrom:         envFrom,
 							Resources:       template.Spec.Resources,
 							VolumeMounts:    mounts,
 							SecurityContext: containerSC,

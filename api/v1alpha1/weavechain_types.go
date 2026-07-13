@@ -202,6 +202,15 @@ type WeaveChainSpec struct {
 	// this chain and mounts it into every job pod at /weave-shared.
 	// +optional
 	SharedStorage *WeaveSharedStorageSpec `json:"sharedStorage,omitempty"`
+
+	// AuthSecretRef optionally names a Secret injected via envFrom into every
+	// step pod of this chain (Job and Deploy kind alike). Its keys become
+	// environment variables that runner-side helper libraries (e.g. the
+	// Python KeycloakAuth helper) use to obtain access tokens. Overridable
+	// per-trigger (WeaveTriggerSpec.AuthSecretRefOverride) or per-run
+	// (WeaveRunSpec.AuthSecretRefOverride).
+	// +optional
+	AuthSecretRef *corev1.LocalObjectReference `json:"authSecretRef,omitempty"`
 }
 
 // WeaveChainStatus reflects validation results for the chain.

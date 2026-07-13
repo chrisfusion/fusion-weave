@@ -144,6 +144,12 @@ type WeaveRunSpec struct {
 	// Non-override runs are unaffected.
 	// +optional
 	StepOverrides []WeaveRunStepOverride `json:"stepOverrides,omitempty"`
+
+	// AuthSecretRefOverride overrides WeaveChainSpec.AuthSecretRef (and any
+	// WeaveTriggerSpec.AuthSecretRefOverride) for this run only. Injected via
+	// envFrom into every step pod of this run.
+	// +optional
+	AuthSecretRefOverride *corev1.LocalObjectReference `json:"authSecretRefOverride,omitempty"`
 }
 
 // WeaveRunStatus reflects the live execution state of the run.

@@ -8,6 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `WeaveChainSpec.authSecretRef` — optionally names a Secret injected via `envFrom` into every step pod (Job and Deploy kind) of the chain, so runner-side helper libraries (e.g. the `fusion-runner` Python `KeycloakAuth` helper) can read credential keys as env vars. Overridable per-trigger (`WeaveTriggerSpec.authSecretRefOverride`) and per-run (`WeaveRunSpec.authSecretRefOverride`); precedence is run > trigger > chain.
 - `WeaveTrigger` type `Kafka` — generic Kafka consumer trigger; fires one WeaveRun per message after applying configurable `eventFilter` (put/delete/get) and `bucketFilter` (bucket name list). Designed for S3/MinIO change events forwarded to Redpanda via `mc event add`.
 - `WeaveTriggerSpec.kafka` — config struct with `brokers`, `topic`, `consumerGroup`, optional `secretRef` (SASL: keys `username`/`password`/`mechanism`), `eventFilter`, `bucketFilter`, `maxConcurrentRuns` (throttle cap; 0 = unlimited). Paused via `spec.paused=true` (same field as BatchCron).
 - `internal/trigger.KafkaConsumer` — one goroutine per Kafka trigger using `segmentio/kafka-go`; filters applied before the fire channel; offsets committed on every message including filtered and throttled ones (skip policy).
