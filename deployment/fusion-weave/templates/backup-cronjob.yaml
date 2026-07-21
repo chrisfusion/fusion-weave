@@ -1,0 +1,65 @@
+{{- $backup := .Values.backup | default dict -}}
+{{- $s3 := $backup.s3 | default dict -}}
+{{- $backupImage := $backup.image | default dict -}}
+{{- $backupSA := $backup.serviceAccount | default dict -}}
+{{- if $backup.enabled }}
+{{/*
+  Ordinary resource, not a Helm hook — a CronJob's scheduled runs always use
+  whatever jobTemplate is currently applied by the most recent helm upgrade, so
+  there's no hook-ordering problem to worry about here.
+*/}}
+# SPDX-License-Identifier: GPL-3.0-or-later
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  schedule: {{ $backup.schedule | default "0 3 * * *" | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ $backup.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ $backup.failedJobsHistoryLimit | default 1 }}
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: {{ $backup.activeDeadlineSeconds | default 1800 }}
+      template:
+        metadata:
+          labels:
+            {{- include "fusion-weave.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ $backupSA.name }}
+          containers:
+            - name: backup
+              image: {{ include "fusion-weave.backup.image" . }}
+              imagePullPolicy: {{ default .Values.image.pullPolicy $backupImage.pullPolicy }}
+              command: ["/backup", "backup"]
+              env:
+                - name: NAMESPACE
+                  value: {{ .Release.Namespace | quote }}
+                - name: S3_BUCKET
+                  value: {{ $s3.bucket | required "backup.s3.bucket is required when backup.enabled=true" | quote }}
+                - name: S3_BACKUP_PREFIX
+                  value: {{ include "fusion-weave.backup.s3BackupPrefix" . | quote }}
+                - name: AWS_REGION
+                  value: {{ $s3.region | default "us-east-1" | quote }}
+                {{- if $s3.endpointOverride }}
+                - name: S3_ENDPOINT_OVERRIDE
+                  value: {{ $s3.endpointOverride | quote }}
+                {{- end }}
+                {{- if ne $s3.credentialsType "default" }}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "fusion-weave.backup.s3SecretName" . }}
+                      key: aws-access-key-id
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "fusion-weave.backup.s3SecretName" . }}
+                      key: aws-secret-access-key
+                {{- end }}
+{{- end }}

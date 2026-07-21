@@ -216,6 +216,45 @@ ingress:
   # Example: "svc.instance-a.fusion.company.com"
   hostSuffix: ""
 
+# Periodic S3 backup of WeaveJobTemplate/WeaveServiceTemplate/WeaveChain/WeaveTrigger
+# specs (never WeaveRun, never .status) for disaster recovery. One day of staleness
+# is acceptable — see cmd/backup. Restore is manual-only, not chart-templated.
+backup:
+  # Set to true to deploy the daily backup CronJob.
+  enabled: false
+
+  # schedule is a standard cron expression (CronJob spec.schedule).
+  schedule: "0 3 * * *"
+
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  activeDeadlineSeconds: 1800
+
+  # Image — defaults to the same image as the operator (both binaries are in the same image).
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: ""
+
+  serviceAccount:
+    name: fusion-weave-backup
+
+  s3:
+    bucket: ""
+    # backupPrefix is the S3 key prefix for backup objects. Left empty (default),
+    # resolves to "<kubernetes-namespace>/backups".
+    backupPrefix: ""
+    region: us-east-1
+    # endpointOverride is set for MinIO, Ceph, or custom S3-compatible endpoints.
+    endpointOverride: ""
+    # credentialsType: "static" injects AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY from a
+    # Secret (accessKeyId/secretAccessKey below, or existingSecret); "default" relies
+    # on the AWS SDK's default credential chain (IRSA, instance role, etc.).
+    credentialsType: static
+    existingSecret: ""
+    accessKeyId: ""
+    secretAccessKey: ""
+
 # Sample resources deployed alongside the operator.
 # Disabled by default — enable to get a working shared-storage demo chain.
 # Deploy with: helm upgrade --install ... --set samples.enabled=true

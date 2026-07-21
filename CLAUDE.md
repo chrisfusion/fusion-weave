@@ -14,6 +14,7 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - `api/v1alpha1/` — CRD type definitions (WeaveJobTemplate, WeaveServiceTemplate, WeaveChain, WeaveTrigger, WeaveRun)
 - `internal/controller/` — 5 reconcilers, one per CRD; weaverun_controller.go is the main execution engine
 - `internal/dag/` — pure-Go DAG engine (graph.go + executor.go); no Kubernetes dependency, fully unit-tested
+- `internal/backup/` — S3 backup/restore of WeaveJobTemplate/WeaveServiceTemplate/WeaveChain/WeaveTrigger specs (never WeaveRun, never `.status`); pure Go, unit-tested via controller-runtime's fake client
 - `internal/jobbuilder/` — translates WeaveJobTemplate + WeaveChainStep + WeaveRun into batch/v1 Job specs
 - `internal/deploybuilder/` — builds apps/v1 Deployment + Service + Ingress for deploy-kind steps
 - `internal/trigger/` — CronScheduler, BatchCronScheduler (per-trigger min-heap goroutines), KafkaConsumer (per-trigger Kafka consumer goroutines + s3event parsing); fire channel → drain goroutine → pending map → wakeup pattern
@@ -22,6 +23,7 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - `cmd/main.go` — wires manager, registers controllers, creates shared fire channel
 - `cmd/api/main.go` — entry point for the REST API server (separate from the operator)
 - `cmd/loader/main.go` — init container entry point for codeSource deploy steps; built into operator image as `/loader`
+- `cmd/backup/main.go` — entry point for the `/backup` binary (`backup`/`restore` subcommands); daily CronJob dumps CRD specs to S3, restore is manual-only, not chart-templated
 
 ## Logging (API server)
 - Platform logging principles: `../logging_principles.md` (written for Gin, adapted here for chi).
@@ -43,6 +45,7 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - Package naming: tests of unexported functions use `package <pkg>` (same package); exported-function tests use `package <pkg>_test` — match whatever the existing test file in that package uses.
 - HTTP layer tests (indexclient) use `net/http/httptest` + Go 1.22+ `http.NewServeMux()` with method-qualified routes (`"GET /api/v1/..."`) and path wildcards (`{id}`).
 - `sigs.k8s.io/yaml` v1.4.0: `port: "8080"` (quoted YAML string) causes a parse error — YAML string → JSON string → `encoding/json` cannot unmarshal into `int32`. Unknown fields are silently ignored.
+- `sigs.k8s.io/controller-runtime/pkg/client/fake` — in-memory fake client for unit-testing any code that takes a `client.Client`, no real cluster needed. `fake.NewClientBuilder().WithScheme(scheme).WithObjects(...).Build()`; register both `clientgoscheme` and `weavev1alpha1` on the scheme. First used in `internal/backup/*_test.go`.
 
 ## Key gotchas
 - `gofmt -l ./...` currently flags several files with pre-existing struct-literal column misalignment unrelated to any given change (likely a local `gofmt` version drift). Check `git diff` before trusting `gofmt -l` output — only reformat lines your own edit touched, don't blanket `gofmt -w` the repo.
@@ -57,6 +60,9 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - `deploybuilder.Build` (chain-owned) vs `BuildFromOverride` (run-owned) port asymmetry: `Build` writes `WEAVE_PORT` env var from `meta.Runner.Port` but never replaces container/service ports — those always come from `tmpl.Spec.Ports`. `BuildFromOverride` replaces ports entirely when `meta.Runner.Port > 0`. Do not assume they behave the same.
 - `runner.args` keys that collide with `tmpl.Spec.Env` entries produce silent duplicate env vars — the builder appends without deduplication. Template env comes first; runner.args appended after (runtime last-value-wins means runner.args effectively overrides).
 - Removing a `+kubebuilder:default` annotation from a type does NOT clear the value from existing CRs — K8s wrote the default into each object at creation time. Production CRs silently ignore the operator env-var fallback (e.g. `FUSION_INDEX_URL`) because the field is non-empty. Fix: `kubectl patch <resource> <name> -n fusion --type=merge -p '{"spec":{"fieldName":""}}'` on each affected object.
+- `k8s.io/apimachinery/pkg/util/yaml.NewYAMLReader`'s first `Read()` includes a leading `---` marker verbatim as part of that document's bytes when the stream opens with a separator — trim it explicitly before checking a document for blankness, or a leading blank doc misparses as an "empty kind" error instead of being skipped.
+- When adding S3-backed functionality (backups, artifact storage, etc.), check `../fusion-index` first — it already has proven S3 conventions worth mirroring exactly: env var names (`S3_BUCKET`, `S3_BACKUP_PREFIX`, `AWS_REGION`, `S3_ENDPOINT_OVERRIDE`), streaming multipart upload via `aws-sdk-go-v2/feature/s3/manager` (no local temp file), and restore-refuses-unless-FORCE safety guards. Pin `aws-sdk-go-v2` submodule versions to match `../fusion-index/go.mod` exactly rather than picking latest.
+- Adding a new one-shot batch binary (backup, migration, etc.): copy the `cmd/backup/` shape — `configFromEnv`/`setupLogger` in `main.go`, `client.New(ctrl.GetConfigOrDie(), ...)` with no manager/cache/leader-election, a dedicated least-privilege ServiceAccount/Role/RoleBinding in both `config/rbac/` and `deployment/fusion-weave/templates/`, a `<name>-cronjob.yaml` gated by `<name>.enabled` in values.yaml, and an image-fallback Helm helper (`fusion-weave.<name>.image`) mirroring `fusion-weave.api.image`.
 
 ## Deploy / test cycle on minikube
 ```

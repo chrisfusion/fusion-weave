@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fusion-weave-backup
+  namespace: fusion
+rules:
+  # Read-only, and deliberately excludes weaveruns — the backup CronJob only ever
+  # dumps WeaveJobTemplate/WeaveServiceTemplate/WeaveChain/WeaveTrigger specs.
+  - apiGroups: ["weave.fusion-platform.io"]
+    resources:
+      - weavejobtemplates
+      - weaveservicetemplates
+      - weavechains
+      - weavetriggers
+    verbs: ["get", "list", "watch"]
