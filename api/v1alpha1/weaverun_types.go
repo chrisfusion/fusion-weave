@@ -111,10 +111,14 @@ type WeaveRunStepOverride struct {
 	// +kubebuilder:validation:MinLength=1
 	Tag string `json:"tag"`
 
-	// IngressHost is the fully-qualified domain name for this service instance
-	// (e.g. "my-service.example.com"). Required when the chain step uses an Ingress.
+	// IngressName is the leftmost DNS label for this service instance's
+	// hostname (e.g. "my-service"). The operator appends the cluster-wide
+	// ingress host suffix (ingress.hostSuffix / INGRESS_HOST_SUFFIX) to form
+	// the full hostname. Required when the chain step uses an Ingress.
 	// +optional
-	IngressHost string `json:"ingressHost,omitempty"`
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	IngressName string `json:"ingressName,omitempty"`
 
 	// IndexURL is the fusion-index base URL used to resolve the artifact.
 	// When empty the operator falls back to the FUSION_INDEX_URL env var,

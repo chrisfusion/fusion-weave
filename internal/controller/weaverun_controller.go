@@ -63,6 +63,7 @@ type WeaveRunReconciler struct {
 	FusionIndexURL         string
 	LoaderImage            string
 	WritablePaths          []string
+	IngressHostSuffix      string
 }
 
 // failStepNow marks a step Failed with a message and records the completion time.
@@ -932,7 +933,10 @@ func (r *WeaveRunReconciler) syncDeployStep(
 
 	// Upsert Ingress if configured.
 	if svcTmpl.Spec.Ingress != nil {
-		ing := deploybuilder.BuildIngress(svcTmpl, chain.Name, stepSpec.Name, run.Namespace)
+		if r.IngressHostSuffix == "" {
+			return fmt.Errorf("service template %q has an ingress but the operator ingress host suffix is not configured (set ingress.hostSuffix in the Helm chart)", svcTmpl.Name)
+		}
+		ing := deploybuilder.BuildIngress(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.IngressHostSuffix)
 		if ing != nil {
 			ing.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 			if err := r.upsertIngress(ctx, ing); err != nil {
@@ -1409,7 +1413,10 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 		return fmt.Errorf("upsert override service %q: %w", svc.Name, err)
 	}
 
-	ing := deploybuilder.BuildIngressFromOverride(svcTmpl, meta, override, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace)
+	if (svcTmpl.Spec.Ingress != nil || override.IngressName != "") && r.IngressHostSuffix == "" {
+		return fmt.Errorf("step %q has an ingress but the operator ingress host suffix is not configured (set ingress.hostSuffix in the Helm chart)", stepSpec.Name)
+	}
+	ing := deploybuilder.BuildIngressFromOverride(svcTmpl, meta, override, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.IngressHostSuffix)
 	if ing != nil {
 		ing.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 		if err := r.upsertIngress(ctx, ing); err != nil {

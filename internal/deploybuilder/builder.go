@@ -274,10 +274,12 @@ func BuildService(
 }
 
 // BuildIngress constructs a networkingv1.Ingress for a deploy-kind step.
-// Returns nil when the template has no Ingress spec.
+// Returns nil when the template has no Ingress spec. hostSuffix is the
+// cluster-wide ingress host suffix; each rule's Name is joined with it to
+// form the full hostname (see IngressHost).
 func BuildIngress(
 	tmpl *weavev1alpha1.WeaveServiceTemplate,
-	chainName, stepName, namespace string,
+	chainName, stepName, namespace, hostSuffix string,
 ) *networkingv1.Ingress {
 	if tmpl.Spec.Ingress == nil {
 		return nil
@@ -325,7 +327,7 @@ func BuildIngress(
 		}
 
 		ing.Spec.Rules = append(ing.Spec.Rules, networkingv1.IngressRule{
-			Host: rule.Host,
+			Host: IngressHost(rule.Name, hostSuffix),
 			IngressRuleValue: networkingv1.IngressRuleValue{
 				HTTP: &networkingv1.HTTPIngressRuleValue{
 					Paths: []networkingv1.HTTPIngressPath{
@@ -343,7 +345,7 @@ func BuildIngress(
 	if spec.TLSSecretName != "" {
 		var hosts []string
 		for _, r := range spec.Rules {
-			hosts = append(hosts, r.Host)
+			hosts = append(hosts, IngressHost(r.Name, hostSuffix))
 		}
 		ing.Spec.TLS = []networkingv1.IngressTLS{
 			{
@@ -609,16 +611,18 @@ func BuildServiceFromOverride(
 }
 
 // BuildIngressFromOverride constructs a run-owned Ingress for a step override.
-// ingressHost overrides the host from the template's ingress rules.
+// override.IngressName overrides the name from the template's ingress rules.
 // meta.Ingress.PathPrefix, when set, replaces the path in the first rule.
-// Returns nil when the template has no Ingress spec and ingressHost is empty.
+// hostSuffix is the cluster-wide ingress host suffix; the resolved name is
+// joined with it to form the full hostname (see IngressHost).
+// Returns nil when the template has no Ingress spec and override.IngressName is empty.
 func BuildIngressFromOverride(
 	tmpl *weavev1alpha1.WeaveServiceTemplate,
 	meta *indexclient.AppMetadata,
 	override *weavev1alpha1.WeaveRunStepOverride,
-	runName, stepName, namespace string,
+	runName, stepName, namespace, hostSuffix string,
 ) *networkingv1.Ingress {
-	if tmpl.Spec.Ingress == nil && override.IngressHost == "" {
+	if tmpl.Spec.Ingress == nil && override.IngressName == "" {
 		return nil
 	}
 
@@ -647,10 +651,11 @@ func BuildIngressFromOverride(
 	}
 
 	pathType := networkingv1.PathTypePrefix
-	host := override.IngressHost
-	if host == "" && tmpl.Spec.Ingress != nil && len(tmpl.Spec.Ingress.Rules) > 0 {
-		host = tmpl.Spec.Ingress.Rules[0].Host
+	ruleName := override.IngressName
+	if ruleName == "" && tmpl.Spec.Ingress != nil && len(tmpl.Spec.Ingress.Rules) > 0 {
+		ruleName = tmpl.Spec.Ingress.Rules[0].Name
 	}
+	host := IngressHost(ruleName, hostSuffix)
 
 	ing := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{

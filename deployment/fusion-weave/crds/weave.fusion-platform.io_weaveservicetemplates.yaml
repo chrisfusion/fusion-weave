@@ -448,10 +448,17 @@ spec:
                       description: WeaveIngressRule defines one host/path routing
                         rule.
                       properties:
-                        host:
-                          description: Host is the fully-qualified domain name for
-                            the rule.
+                        name:
+                          description: |-
+                            Name is the leftmost DNS label for this rule's hostname. The operator
+                            appends the cluster-wide ingress host suffix (configured via the
+                            ingress.hostSuffix Helm value / INGRESS_HOST_SUFFIX env var) to form the
+                            full hostname: "<name>.<hostSuffix>". Templates cannot specify a full
+                            domain, so an Ingress can never be pointed at a hostname outside the
+                            operator's configured suffix.
+                          maxLength: 63
                           minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                           type: string
                         path:
                           default: /
@@ -473,7 +480,7 @@ spec:
                           minLength: 1
                           type: string
                       required:
-                      - host
+                      - name
                       - servicePort
                       type: object
                     minItems: 1

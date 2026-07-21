@@ -56,6 +56,8 @@ spec:
               value: ""
             - name: WRITABLE_PATHS
               value: "/tmp:/home/nonroot:/weave-work"
+            - name: INGRESS_HOST_SUFFIX
+              value: ""
           resources:
             limits:
               cpu: 500m

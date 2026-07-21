@@ -34,9 +34,16 @@ type WeaveServicePort struct {
 
 // WeaveIngressRule defines one host/path routing rule.
 type WeaveIngressRule struct {
-	// Host is the fully-qualified domain name for the rule.
+	// Name is the leftmost DNS label for this rule's hostname. The operator
+	// appends the cluster-wide ingress host suffix (configured via the
+	// ingress.hostSuffix Helm value / INGRESS_HOST_SUFFIX env var) to form the
+	// full hostname: "<name>.<hostSuffix>". Templates cannot specify a full
+	// domain, so an Ingress can never be pointed at a hostname outside the
+	// operator's configured suffix.
 	// +kubebuilder:validation:MinLength=1
-	Host string `json:"host"`
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
 
 	// Path is the URL path prefix (e.g. "/"). Defaults to "/".
 	// +kubebuilder:default="/"

@@ -20,6 +20,12 @@ import (
 type WeaveServiceTemplateReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// IngressHostSuffix is the cluster-wide domain suffix (ingress.hostSuffix
+	// Helm value / INGRESS_HOST_SUFFIX env var) appended to every ingress
+	// rule's Name to form the full hostname. A template with an Ingress spec
+	// is invalid until this is configured.
+	IngressHostSuffix string
 }
 
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weaveservicetemplates,verbs=get;list;watch;create;update;patch;delete
@@ -33,7 +39,7 @@ func (r *WeaveServiceTemplateReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	valid, msg := validateServiceTemplate(&tmpl.Spec)
+	valid, msg := validateServiceTemplate(&tmpl.Spec, r.IngressHostSuffix)
 	if tmpl.Status.Valid == valid &&
 		tmpl.Status.ValidationMessage == msg &&
 		tmpl.Status.ObservedGeneration == tmpl.Generation {
@@ -57,7 +63,7 @@ func (r *WeaveServiceTemplateReconciler) Reconcile(ctx context.Context, req ctrl
 	return ctrl.Result{}, nil
 }
 
-func validateServiceTemplate(spec *weavev1alpha1.WeaveServiceTemplateSpec) (bool, string) {
+func validateServiceTemplate(spec *weavev1alpha1.WeaveServiceTemplateSpec, ingressHostSuffix string) (bool, string) {
 	if spec.Image == "" {
 		return false, "spec.image is required"
 	}
@@ -86,15 +92,18 @@ func validateServiceTemplate(spec *weavev1alpha1.WeaveServiceTemplateSpec) (bool
 		}
 	}
 	if spec.Ingress != nil {
+		if ingressHostSuffix == "" {
+			return false, "operator ingress host suffix is not configured; set ingress.hostSuffix in the Helm chart (INGRESS_HOST_SUFFIX)"
+		}
 		if len(spec.Ingress.Rules) == 0 {
 			return false, "spec.ingress.rules must contain at least one rule"
 		}
 		for _, rule := range spec.Ingress.Rules {
-			if rule.Host == "" {
-				return false, "ingress rule must have a non-empty host"
+			if rule.Name == "" {
+				return false, "ingress rule must have a non-empty name"
 			}
 			if !portNames[rule.ServicePort] {
-				return false, fmt.Sprintf("ingress rule host %q references servicePort %q which is not declared in spec.ports", rule.Host, rule.ServicePort)
+				return false, fmt.Sprintf("ingress rule name %q references servicePort %q which is not declared in spec.ports", rule.Name, rule.ServicePort)
 			}
 		}
 	}

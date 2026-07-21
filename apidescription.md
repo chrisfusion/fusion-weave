@@ -352,7 +352,7 @@ Defines a long-running service (Deployment + Service + optional Ingress). Used b
       "ingressClassName": "nginx",
       "rules": [
         {
-          "host": "my-api.example.com",
+          "name": "my-api",
           "path": "/",
           "pathType": "Prefix",
           "servicePort": 80
@@ -367,6 +367,8 @@ Defines a long-running service (Deployment + Service + optional Ingress). Used b
 ```
 
 `image` and at least one entry in `ports` are required.
+
+`ingress.rules[].name` is a DNS label only (e.g. `my-api`), **not** a full hostname — the API cannot be used to point an Ingress at an arbitrary domain. The operator appends the cluster-wide `ingress.hostSuffix` (set once at install time) to build the real hostname, e.g. `my-api.svc.instance-a.fusion.company.com`. A template with `ingress` set is rejected (`status.valid=false`) until the operator has a suffix configured. The same applies to `WeaveRun.spec.stepOverrides[].ingressName`.
 
 `serviceType` accepts `ClusterIP`, `NodePort`, or `LoadBalancer` (default `ClusterIP`).
 

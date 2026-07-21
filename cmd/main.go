@@ -123,9 +123,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	ingressHostSuffix := os.Getenv("INGRESS_HOST_SUFFIX")
+
 	if err := (&controller.WeaveServiceTemplateReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		IngressHostSuffix: ingressHostSuffix,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveServiceTemplate controller")
 		os.Exit(1)
@@ -184,6 +187,7 @@ func main() {
 		FusionIndexURL:         fusionIndexURL,
 		LoaderImage:            loaderImage,
 		WritablePaths:          writablePaths,
+		IngressHostSuffix:      ingressHostSuffix,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveRun controller")
 		os.Exit(1)

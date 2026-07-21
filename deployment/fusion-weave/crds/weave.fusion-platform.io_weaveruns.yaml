@@ -233,10 +233,14 @@ spec:
                         When empty the operator falls back to the FUSION_INDEX_URL env var,
                         then to the in-cluster default http://fusion-index-backend.fusion.svc.cluster.local:8080.
                       type: string
-                    ingressHost:
+                    ingressName:
                       description: |-
-                        IngressHost is the fully-qualified domain name for this service instance
-                        (e.g. "my-service.example.com"). Required when the chain step uses an Ingress.
+                        IngressName is the leftmost DNS label for this service instance's
+                        hostname (e.g. "my-service"). The operator appends the cluster-wide
+                        ingress host suffix (ingress.hostSuffix / INGRESS_HOST_SUFFIX) to form
+                        the full hostname. Required when the chain step uses an Ingress.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
                     stepName:
                       description: StepName is the name of the deploy-kind step in

@@ -45,6 +45,7 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - `sigs.k8s.io/yaml` v1.4.0: `port: "8080"` (quoted YAML string) causes a parse error — YAML string → JSON string → `encoding/json` cannot unmarshal into `int32`. Unknown fields are silently ignored.
 
 ## Key gotchas
+- `gofmt -l ./...` currently flags several files with pre-existing struct-literal column misalignment unrelated to any given change (likely a local `gofmt` version drift). Check `git diff` before trusting `gofmt -l` output — only reformat lines your own edit touched, don't blanket `gofmt -w` the repo.
 - controller-runtime v0.19.x required (not v0.18.x) — `MetricsBindAddress` renamed to `Metrics: metricsserver.Options{BindAddress: ...}`.
 - `r.Get()` zeroes out TypeMeta — set it explicitly before `metav1.NewControllerRef()` or owner refs get blank apiVersion and GC won't work.
 - `client.MergeFrom(run.DeepCopy())` must be captured immediately after `r.Get()`, before any mutations, or status diffs will be empty.
@@ -131,6 +132,7 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - Kubernetes label values must be sanitized before use — raw user input (IDs, names with spaces, slashes, `@`) fails API server validation (`[A-Za-z0-9][-A-Za-z0-9_.]*`, max 63 chars). Always sanitize any user-supplied string before writing it as a label value.
 - ConfigMap watches via `handler.EnqueueRequestsFromMapFunc` only fire for ConfigMaps that carry the expected label. For GitOps/kubectl compatibility the reconciler should auto-apply the watch label on first fetch of any ConfigMap that is missing it.
 - Every deploy-kind container with `codeSource` receives `WEAVE_ARTIFACT`, `WEAVE_TAG`, `WEAVE_VERSION`, `WEAVE_NAMESPACE`, `WEAVE_MOUNT_PATH` automatically, plus `WEAVE_PORT`, `WEAVE_RUNNER_TYPE`, `WEAVE_BUILDER_IMAGE`, `WEAVE_MAINTAINER`, `WEAVE_INGRESS_PATH_PREFIX`, and all `runner.args` keys when metadata is available. `deploybuilder.UpdateVersionEnvVar(deploy.Spec.Template.Spec.Containers, newVersion)` must be called alongside the `restartedAt` annotation patch in any rolling-restart trigger (`triggerCodeReload`, `pollRunDeploymentCodeSource`) to keep `WEAVE_VERSION` accurate in new pods.
+- Ingress hostnames are never free text: `WeaveIngressRule.name` (template) and `WeaveRunStepOverride.ingressName` (run override) are DNS labels only (`+kubebuilder:validation:Pattern`). The operator appends the cluster-wide `ingress.hostSuffix` Helm value (`INGRESS_HOST_SUFFIX` env var) to form the real host — `deploybuilder.IngressHost(name, hostSuffix)` in `internal/deploybuilder/names.go` is the single place that does this join. Prevents a Flux-managed template or a REST-API-created run from pointing an Ingress at a hostname the operator doesn't own. A `WeaveServiceTemplate` with `spec.ingress` set is invalid (`status.valid=false`, gating the owning `WeaveChain`/`WeaveTrigger`) until `hostSuffix` is configured; `syncDeployStepFromOverride` in `weaverun_controller.go` has an equivalent runtime guard for the override-only path (fails just that step, since it bypasses template validation).
 
 ## REST API (cmd/api)
 - `cmd/api/` binary is separate from the operator; build with `go build ./cmd/api` or run with `go run ./cmd/api`.
@@ -143,6 +145,8 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - Three binaries (`/manager`, `/api-server`, `/loader`) are built into the same Docker image; API deployment overrides entrypoint with `command: ["/api-server"]`; codeSource init containers use `command: ["/loader"]`.
 - Raw-YAML manifest for quick iteration: `kubectl apply -f config/rbac/api-*.yaml -f config/manager/api-server.yaml`
 - `PATCH /api/v1/{resource}/{name}` sends a JSON Merge Patch directly to Kubernetes — callers can set any metadata field including annotations (e.g. `{"metadata":{"annotations":{"fusion-platform.io/restart-step":"stepName"}}}`).
+- **PATCH silently ignores unknown fields**: unlike Create/Update (which decode into the typed Go struct and get CRD-validated), Patch's `mergePatch` forwards the raw JSON body straight to the API server — a stale/misspelled field name (e.g. after a CRD field rename) is pruned by the structural schema with no error, not applied and not rejected.
+- When renaming a CRD JSON field, grep `apidescription.md` for the old name too — its request/response examples are hand-written and won't be caught by `make generate`, `go build`, or `go test`.
 
 ## Helm chart (deployment/fusion-weave/)
 - Install on minikube: `helm upgrade --install fusion-weave deployment/fusion-weave/ --set image.repository=fusion-weave-operator --set image.tag=latest --set image.pullPolicy=Never --set namespace=fusion --set namespaceCreate=false`

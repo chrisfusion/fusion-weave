@@ -204,6 +204,18 @@ codeSource:
     - /home/nonroot
     - /weave-work
 
+# Ingress hostname configuration.
+ingress:
+  # hostSuffix is the cluster-wide domain suffix appended to every ingress
+  # rule's "name" to form the full Ingress hostname: "<name>.<hostSuffix>".
+  # Users configuring WeaveServiceTemplate/WeaveRun ingress can only supply
+  # the leftmost label — never a full domain — so an Ingress can never be
+  # pointed at a hostname the operator doesn't own. Maps to INGRESS_HOST_SUFFIX
+  # on the operator pod. A WeaveServiceTemplate with an ingress is invalid
+  # (status.valid=false) until this is set.
+  # Example: "svc.instance-a.fusion.company.com"
+  hostSuffix: ""
+
 # Sample resources deployed alongside the operator.
 # Disabled by default — enable to get a working shared-storage demo chain.
 # Deploy with: helm upgrade --install ... --set samples.enabled=true

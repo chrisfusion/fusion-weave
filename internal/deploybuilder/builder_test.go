@@ -429,30 +429,30 @@ func TestBuildServiceFromOverride_NoTemplatePorts_NoMetaPort_EmptyServicePorts(t
 
 // ---- BuildIngressFromOverride ----
 
-func TestBuildIngressFromOverride_NoIngressSpec_NoHost_ReturnsNil(t *testing.T) {
+func TestBuildIngressFromOverride_NoIngressSpec_NoName_ReturnsNil(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0") // no Ingress spec
 	ov := &weavev1alpha1.WeaveRunStepOverride{
 		StepName: "step1", ArtifactName: "org.myapp", Tag: "stable",
-		// IngressHost deliberately empty
+		// IngressName deliberately empty
 	}
-	ing := deploybuilder.BuildIngressFromOverride(tmpl, nil, ov, "run1", "step1", "fusion")
+	ing := deploybuilder.BuildIngressFromOverride(tmpl, nil, ov, "run1", "step1", "fusion", "svc.instance-a.fusion.example.com")
 	if ing != nil {
-		t.Errorf("expected nil ingress when no template ingress and no host, got %+v", ing)
+		t.Errorf("expected nil ingress when no template ingress and no name, got %+v", ing)
 	}
 }
 
-func TestBuildIngressFromOverride_HostOnly_DefaultPath(t *testing.T) {
+func TestBuildIngressFromOverride_NameOnly_DefaultPath(t *testing.T) {
 	// No template ingress, no meta pathPrefix → Ingress is created with path "/".
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	ov := &weavev1alpha1.WeaveRunStepOverride{
 		StepName: "step1", ArtifactName: "org.myapp", Tag: "stable",
-		IngressHost: "myapp.example.com",
+		IngressName: "myapp",
 	}
-	ing := deploybuilder.BuildIngressFromOverride(tmpl, nil, ov, "run1", "step1", "fusion")
+	ing := deploybuilder.BuildIngressFromOverride(tmpl, nil, ov, "run1", "step1", "fusion", "svc.instance-a.fusion.example.com")
 	if ing == nil {
-		t.Fatal("expected ingress to be created when IngressHost is set")
+		t.Fatal("expected ingress to be created when IngressName is set")
 	}
-	if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != "myapp.example.com" {
+	if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != "myapp.svc.instance-a.fusion.example.com" {
 		t.Errorf("host mismatch: %+v", ing.Spec.Rules)
 	}
 	path := ing.Spec.Rules[0].IngressRuleValue.HTTP.Paths[0].Path
@@ -470,9 +470,9 @@ func TestBuildIngressFromOverride_MetaPathPrefix_SetAsPath(t *testing.T) {
 	}
 	ov := &weavev1alpha1.WeaveRunStepOverride{
 		StepName: "step1", ArtifactName: "org.myapp", Tag: "stable",
-		IngressHost: "myapp.example.com",
+		IngressName: "myapp",
 	}
-	ing := deploybuilder.BuildIngressFromOverride(tmpl, meta, ov, "run1", "step1", "fusion")
+	ing := deploybuilder.BuildIngressFromOverride(tmpl, meta, ov, "run1", "step1", "fusion", "svc.instance-a.fusion.example.com")
 	if ing == nil {
 		t.Fatal("expected ingress to be created")
 	}
@@ -492,15 +492,33 @@ func TestBuildIngressFromOverride_MetaPort_UsedAsServicePort(t *testing.T) {
 	meta := &indexclient.AppMetadata{Runner: indexclient.AppRunner{Port: 8080}}
 	ov := &weavev1alpha1.WeaveRunStepOverride{
 		StepName: "step1", ArtifactName: "org.myapp", Tag: "stable",
-		IngressHost: "myapp.example.com",
+		IngressName: "myapp",
 	}
-	ing := deploybuilder.BuildIngressFromOverride(tmpl, meta, ov, "run1", "step1", "fusion")
+	ing := deploybuilder.BuildIngressFromOverride(tmpl, meta, ov, "run1", "step1", "fusion", "svc.instance-a.fusion.example.com")
 	if ing == nil {
 		t.Fatal("expected ingress to be created")
 	}
 	svcPort := ing.Spec.Rules[0].IngressRuleValue.HTTP.Paths[0].Backend.Service.Port.Number
 	if svcPort != 8080 {
 		t.Errorf("expected service port 8080 from meta.Runner.Port, got %d", svcPort)
+	}
+}
+
+func TestBuildIngressFromOverride_EmptyHostSuffix_HostIsNameOnly(t *testing.T) {
+	// Defense in depth: if the operator's host suffix is unset, the resulting
+	// host is just the bare name rather than a malformed "name." with a
+	// trailing dot. Validation gates this from ever occurring in practice.
+	tmpl := minTmpl("myrepo/myapp:1.0")
+	ov := &weavev1alpha1.WeaveRunStepOverride{
+		StepName: "step1", ArtifactName: "org.myapp", Tag: "stable",
+		IngressName: "myapp",
+	}
+	ing := deploybuilder.BuildIngressFromOverride(tmpl, nil, ov, "run1", "step1", "fusion", "")
+	if ing == nil {
+		t.Fatal("expected ingress to be created")
+	}
+	if ing.Spec.Rules[0].Host != "myapp" {
+		t.Errorf("host: got %q, want bare name %q", ing.Spec.Rules[0].Host, "myapp")
 	}
 }
 
@@ -594,21 +612,21 @@ func TestBuildFromOverride_RunnerArgsDuplicateEnvVar(t *testing.T) {
 
 func TestBuildIngressFromOverride_TLSFromTemplate_HostFromOverride(t *testing.T) {
 	// TLSSecretName comes from the template; the TLS host list must use the
-	// override host, not the template rule host.
+	// override name, not the template rule name.
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	className := "nginx"
 	tmpl.Spec.Ingress = &weavev1alpha1.WeaveIngressSpec{
 		IngressClassName: &className,
 		TLSSecretName:    "my-tls-secret",
 		Rules: []weavev1alpha1.WeaveIngressRule{
-			{Host: "template.example.com", Path: "/", ServicePort: "http"},
+			{Name: "template", Path: "/", ServicePort: "http"},
 		},
 	}
 	ov := &weavev1alpha1.WeaveRunStepOverride{
 		StepName: "step1", ArtifactName: "org.myapp", Tag: "stable",
-		IngressHost: "override.example.com",
+		IngressName: "override",
 	}
-	ing := deploybuilder.BuildIngressFromOverride(tmpl, nil, ov, "run1", "step1", "fusion")
+	ing := deploybuilder.BuildIngressFromOverride(tmpl, nil, ov, "run1", "step1", "fusion", "svc.instance-a.fusion.example.com")
 	if ing == nil {
 		t.Fatal("expected ingress to be created")
 	}
@@ -619,8 +637,9 @@ func TestBuildIngressFromOverride_TLSFromTemplate_HostFromOverride(t *testing.T)
 	if tls.SecretName != "my-tls-secret" {
 		t.Errorf("TLS secret: got %q, want my-tls-secret", tls.SecretName)
 	}
-	if len(tls.Hosts) != 1 || tls.Hosts[0] != "override.example.com" {
-		t.Errorf("TLS hosts: got %v, want [override.example.com]", tls.Hosts)
+	wantHost := "override.svc.instance-a.fusion.example.com"
+	if len(tls.Hosts) != 1 || tls.Hosts[0] != wantHost {
+		t.Errorf("TLS hosts: got %v, want [%s]", tls.Hosts, wantHost)
 	}
 	if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != "nginx" {
 		t.Errorf("ingressClassName: got %v, want nginx", ing.Spec.IngressClassName)
@@ -752,8 +771,24 @@ func tmplWithIngressRules(ports []weavev1alpha1.WeaveServicePort, rules []weavev
 
 func TestBuildIngress_NilIngressSpec_ReturnsNil(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0") // no Ingress spec
-	if ing := deploybuilder.BuildIngress(tmpl, "chain", "step", "fusion"); ing != nil {
+	if ing := deploybuilder.BuildIngress(tmpl, "chain", "step", "fusion", "svc.instance-a.fusion.example.com"); ing != nil {
 		t.Errorf("expected nil when template has no ingress spec, got %+v", ing)
+	}
+}
+
+func TestBuildIngress_HostSuffix_JoinedWithRuleName(t *testing.T) {
+	// The full hostname is the rule's Name joined with the operator-configured suffix.
+	tmpl := tmplWithIngressRules(
+		[]weavev1alpha1.WeaveServicePort{{Name: "http", Port: 8080}},
+		[]weavev1alpha1.WeaveIngressRule{{Name: "foo", Path: "/", ServicePort: "http"}},
+	)
+	ing := deploybuilder.BuildIngress(tmpl, "chain", "step", "fusion", "svc.instance-a.fusion.example.com")
+	if ing == nil {
+		t.Fatal("expected ingress to be created")
+	}
+	wantHost := "foo.svc.instance-a.fusion.example.com"
+	if ing.Spec.Rules[0].Host != wantHost {
+		t.Errorf("host: got %q, want %q", ing.Spec.Rules[0].Host, wantHost)
 	}
 }
 
@@ -761,9 +796,9 @@ func TestBuildIngress_ServicePortByName(t *testing.T) {
 	// ServicePort ref matches a declared port name → backend uses Name form (not Number).
 	tmpl := tmplWithIngressRules(
 		[]weavev1alpha1.WeaveServicePort{{Name: "http", Port: 8080}},
-		[]weavev1alpha1.WeaveIngressRule{{Host: "foo.com", Path: "/", ServicePort: "http"}},
+		[]weavev1alpha1.WeaveIngressRule{{Name: "foo", Path: "/", ServicePort: "http"}},
 	)
-	ing := deploybuilder.BuildIngress(tmpl, "chain", "step", "fusion")
+	ing := deploybuilder.BuildIngress(tmpl, "chain", "step", "fusion", "svc.instance-a.fusion.example.com")
 	if ing == nil {
 		t.Fatal("expected ingress to be created")
 	}
@@ -780,9 +815,9 @@ func TestBuildIngress_ServicePortNumeric(t *testing.T) {
 	// ServicePort ref is a numeric string not matching any port name → numeric backend port.
 	tmpl := tmplWithIngressRules(
 		[]weavev1alpha1.WeaveServicePort{{Name: "http", Port: 8080}},
-		[]weavev1alpha1.WeaveIngressRule{{Host: "foo.com", Path: "/", ServicePort: "9000"}},
+		[]weavev1alpha1.WeaveIngressRule{{Name: "foo", Path: "/", ServicePort: "9000"}},
 	)
-	ing := deploybuilder.BuildIngress(tmpl, "chain", "step", "fusion")
+	ing := deploybuilder.BuildIngress(tmpl, "chain", "step", "fusion", "svc.instance-a.fusion.example.com")
 	if ing == nil {
 		t.Fatal("expected ingress to be created")
 	}
@@ -800,9 +835,9 @@ func TestBuildIngress_ServicePortUnresolvable(t *testing.T) {
 	// to treating the ref itself as a named port reference.
 	tmpl := tmplWithIngressRules(
 		[]weavev1alpha1.WeaveServicePort{{Name: "http", Port: 8080}},
-		[]weavev1alpha1.WeaveIngressRule{{Host: "foo.com", Path: "/", ServicePort: "nonexistent"}},
+		[]weavev1alpha1.WeaveIngressRule{{Name: "foo", Path: "/", ServicePort: "nonexistent"}},
 	)
-	ing := deploybuilder.BuildIngress(tmpl, "chain", "step", "fusion")
+	ing := deploybuilder.BuildIngress(tmpl, "chain", "step", "fusion", "svc.instance-a.fusion.example.com")
 	if ing == nil {
 		t.Fatal("expected ingress to be created")
 	}

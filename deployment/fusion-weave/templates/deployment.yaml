@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 {{- $cs := .Values.codeSource | default dict -}}
+{{- $ingress := .Values.ingress | default dict -}}
 {{- $workload := .Values.workload | default dict -}}
 {{- $defaultWorkloadSecurity := dict
     "podAnnotations" dict
@@ -84,6 +85,10 @@ spec:
             {{- if $cs.writablePaths }}
             - name: WRITABLE_PATHS
               value: {{ join ":" $cs.writablePaths | quote }}
+            {{- end }}
+            {{- if $ingress.hostSuffix }}
+            - name: INGRESS_HOST_SUFFIX
+              value: {{ $ingress.hostSuffix | quote }}
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

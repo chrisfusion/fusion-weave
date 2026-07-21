@@ -39,3 +39,15 @@ func RunServiceName(runName, stepName string) string {
 func RunIngressName(runName, stepName string) string {
 	return fmt.Sprintf("%s-%s", runName, stepName)
 }
+
+// IngressHost joins a user-supplied ingress rule name with the operator-wide
+// host suffix (ingress.hostSuffix / INGRESS_HOST_SUFFIX) to produce the final
+// Ingress hostname. Users only ever control the leftmost label; the domain is
+// always the operator's fixed suffix, so a template or run can never point an
+// Ingress at an arbitrary external hostname.
+func IngressHost(name, hostSuffix string) string {
+	if hostSuffix == "" {
+		return name
+	}
+	return fmt.Sprintf("%s.%s", name, hostSuffix)
+}
