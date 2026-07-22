@@ -54,14 +54,12 @@ func OutputsConfigMapName(runName string) string {
 }
 
 // JobName returns the deterministic name for a step's batch Job.
-// Format: <runName>-<stepName>-<retryCount>
+// Format: <runName>-<stepName>-<retryCount>, truncated to 63 bytes — Kubernetes
+// auto-derives a "job-name" pod label from this name, and label values are
+// capped at 63 bytes regardless of the generic 253-byte object-name limit.
 func JobName(runName, stepName string, retryCount int32) string {
 	suffix := fmt.Sprintf("%s-%s-%d", runName, stepName, retryCount)
-	// Kubernetes names must be <=253 chars and DNS subdomain safe.
-	if len(suffix) > 253 {
-		suffix = suffix[:253]
-	}
-	return suffix
+	return codesource.TruncateK8sName(suffix, 63)
 }
 
 // Build constructs a batch/v1 Job for the given step.

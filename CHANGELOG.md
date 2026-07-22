@@ -5,7 +5,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [0.4.0] — 2026-07-22
 
 ### Added
 - **Showroom**: a curated, preseeded set of ~10 example WeaveChains touring the platform's major features, replacing the single shared-storage `samples.yaml` demo. Split into one file per chain under `deployment/fusion-weave/templates/showroom/`, each independently gated by `showroom.enabled` plus its own `showroom.chains.<name>` flag. Tier 1 (`dagBasics`, `sharedStorage`, `deployIngress`, `stepIO`, `triggerOnDemand`, `triggerCron`, `triggerBatchCron`, default `true`; `triggerKafka`, default `false`) is fully self-contained (busybox/nginx only) and installs with zero external dependency. Tier 2 (`showroom.codeSourceApps.*`, default `false`: `streamlitShowcase`, `batchReport`, `batchMetadata`) deploys real artifacts built from the new `../fusion-testcases/testcases_v2/` fixtures via fusion-forge and published to fusion-index — see `deployment/fusion-weave/README.md` ("Showroom" section) and `testcases_v2/README.md`.
@@ -73,6 +73,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `podSecurityContext` and `containerSecurityContext` fields on `WeaveJobTemplateSpec` and `WeaveServiceTemplateSpec`. When set, these override the operator-wide `WORKLOAD_SECURITY_DEFAULTS` for pods/containers created from that template, allowing per-workload user configuration (e.g. `runAsUser: 101` for nginx). The init container on deploy steps with `codeSource` also inherits the template's `containerSecurityContext`.
 
 ### Fixed
+- `internal/codesource.TruncateK8sName` — new shared helper (hash-suffix truncation) applied to `jobbuilder.JobName` and all six `deploybuilder` step-resource-name functions (`DeploymentName`, `ServiceName`, `IngressName`, and their `Run*` counterparts). Job and Service names must be ≤63 bytes, not the generic 253-byte object-name limit, because Kubernetes auto-derives a pod-template label from the name (`job-name` for Jobs; selector/endpoint labels for Services) and label values are capped at 63 bytes — a longer name was silently rejected by the API server (`Job.batch "..." is invalid: spec.template.labels: ... must be no more than 63 bytes`). Found via the showroom `batch-metadata` `BatchCron` chain, whose generated run name (`<triggerName>-<jobID>-<random>`) plus step name exceeded the limit. Deployment/Ingress names are truncated identically to Service even though their own limits are looser, so all resources for a step stay linked to the same name.
+- `captureStepOutput` (`producesOutput`) now extracts and validates only the **last** stdout line, matching the documented contract — previously it required the entire trimmed stdout blob to be valid JSON, so any step that logged progress lines before its JSON result failed with "output is not valid JSON" even though its last line was valid. Found via the showroom `step-io` chain's `validate` step, which logs one line before printing its JSON result.
 - Deploy-step Deployments, Services, and Ingresses are now deleted when a WeaveRun is killed or stopped. A `weave.fusion-platform.io/deploy-cleanup` finalizer is added to any run whose chain contains deploy-kind steps; the finalizer ensures teardown runs before the run object is garbage-collected, preventing zombie pods. Succeeded runs are exempt — their Deployments survive for rolling updates by future runs on the same chain.
 
 ### Added

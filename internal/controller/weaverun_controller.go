@@ -1064,10 +1064,12 @@ func (r *WeaveRunReconciler) captureStepOutput(ctx context.Context, ns, jobName 
 	}
 
 	trimmed := strings.TrimSpace(string(logBytes))
-	if !json.Valid([]byte(trimmed)) {
+	lines := strings.Split(trimmed, "\n")
+	lastLine := strings.TrimSpace(lines[len(lines)-1])
+	if !json.Valid([]byte(lastLine)) {
 		return "", true, fmt.Errorf("output is not valid JSON")
 	}
-	return trimmed, true, nil
+	return lastLine, true, nil
 }
 
 // writeOutputToConfigMap creates (if needed) the run's output ConfigMap and writes

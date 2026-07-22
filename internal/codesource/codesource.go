@@ -6,6 +6,8 @@
 package codesource
 
 import (
+	"fmt"
+	"hash/fnv"
 	"strconv"
 	"strings"
 
@@ -72,6 +74,28 @@ func WritableVolumeName(path string) string {
 		slug = strings.TrimRight(slug[:maxSlug], "-")
 	}
 	return prefix + slug
+}
+
+// TruncateK8sName shortens name to at most maxLen bytes, replacing any
+// truncated portion with a short deterministic hash so distinct long names
+// don't collide after truncation. No-op when name already fits.
+//
+// batch/v1 Job and Service names must be <=63 bytes (not the generic 253-byte
+// object-name limit) because Kubernetes auto-derives a label from the name
+// (Job: "job-name"; Service: selector/endpoint labels) and label values are
+// capped at 63 bytes — a longer name is rejected by the API server.
+func TruncateK8sName(name string, maxLen int) string {
+	if len(name) <= maxLen {
+		return name
+	}
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(name))
+	hash := fmt.Sprintf("%08x", sum.Sum32())
+	keep := maxLen - len(hash) - 1
+	if keep < 0 {
+		keep = 0
+	}
+	return strings.TrimRight(name[:keep], "-") + "-" + hash
 }
 
 // HasVolume reports whether a volume with the given name is already in the slice.

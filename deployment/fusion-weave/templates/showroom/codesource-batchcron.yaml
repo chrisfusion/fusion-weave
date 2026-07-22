@@ -70,7 +70,7 @@ metadata:
 data:
   jobs.yaml: |
     - job:
-        id: "showroom-metadata-staging"
+        id: "meta-staging"
         name: "read-artifact-metadata-staging"
         topic: "showroom"
         maintainer: "showroom"
@@ -79,7 +79,7 @@ data:
           environment: staging
           owner: showroom-team
     - job:
-        id: "showroom-metadata-prod"
+        id: "meta-prod"
         name: "read-artifact-metadata-prod"
         topic: "showroom"
         maintainer: "showroom"
