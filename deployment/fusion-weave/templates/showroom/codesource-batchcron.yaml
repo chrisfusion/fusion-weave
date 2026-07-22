@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom (Tier 2): a codeSource-backed Job step fired by a BatchCron
+# schedule instead of OnDemand — the more complete BatchCron demo.
+#
+#   showroom-batch-cron-jobs (ConfigMap, trigger-batchcron.yaml) is the
+#   "simple" BatchCron example: a busybox job, no fusion-index dependency.
+#
+#   This file is the "complicated" one: each scheduled job entry below fires
+#   showroom-batch-metadata, whose step pulls the real app.batch-metadata-reader
+#   artifact via codeSource and, at runtime, reads back both:
+#     - its own artifact metadata (WEAVE_* env vars, from codeSource)
+#     - the firing job's scheduling metadata (JOB_* env vars, from BatchCron,
+#       including the arbitrary JOB_METADATA map below)
+#
+# Built from ../fusion-testcases/testcases_v2/app-builds/batch-metadata-reader
+# by fusion-forge, published to fusion-index under tag "stable".
+#
+# Requires the artifact already published — see testcases_v2/README.md, or
+# apply ../fusion-forge/config/samples/gitwatcher_app_autobuild.yaml (adjust
+# projectDir to batch-metadata-reader).
+#
+# Gated by showroom.enabled && showroom.codeSourceApps.enabled && showroom.codeSourceApps.batchMetadata.
+{{- if and .Values.showroom.enabled .Values.showroom.codeSourceApps.enabled .Values.showroom.codeSourceApps.batchMetadata }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: showroom-batch-metadata-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: fusion-runner-python312:local
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  codeSource:
+    artifactName: app.batch-metadata-reader
+    tag: stable
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: showroom-batch-metadata
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: read-metadata
+      stepKind: Job
+      jobTemplateRef:
+        name: showroom-batch-metadata-reader
+      producesOutput: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: showroom-batch-metadata-jobs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+    fusion-platform.io/batch-trigger: showroom-batch-metadata
+data:
+  jobs.yaml: |
+    - job:
+        id: "showroom-metadata-staging"
+        name: "read-artifact-metadata-staging"
+        topic: "showroom"
+        maintainer: "showroom"
+        schedule: "*/15 * * * *"
+        metadata:
+          environment: staging
+          owner: showroom-team
+    - job:
+        id: "showroom-metadata-prod"
+        name: "read-artifact-metadata-prod"
+        topic: "showroom"
+        maintainer: "showroom"
+        schedule: "0 */6 * * *"
+        metadata:
+          environment: production
+          owner: showroom-team
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: showroom-batch-metadata-cron
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: showroom-batch-metadata
+  type: BatchCron
+  batchCron:
+    jobsConfigMapRef:
+      name: showroom-batch-metadata-jobs
+{{- end }}

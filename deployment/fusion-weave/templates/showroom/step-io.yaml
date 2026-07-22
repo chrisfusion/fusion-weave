@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom: step input/output passing.
+#
+#   fetch (producesOutput) ──► validate (consumesOutputFrom: [fetch], producesOutput)
+#
+# "fetch" prints a JSON result as its last stdout line; the operator captures it
+# and writes it to /weave-input/input.json inside "validate", namespaced under
+# "fetch". Only the last stdout line that parses as JSON is captured.
+#
+# Fire manually:
+#   kubectl annotate weavetrigger showroom-step-io-trigger fusion-platform.io/fire=true --overwrite -n {{ .Release.Namespace }}
+{{- if and .Values.showroom.enabled .Values.showroom.chains.stepIO }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: showroom-data-fetcher
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: python:3.12-slim
+  command: ["python", "-c"]
+  args:
+    - |
+      import json
+      result = {"dataset": "showroom-sales-q1", "row_count": 42000, "checksum": "abc123"}
+      print(json.dumps(result))
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: showroom-data-validator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: python:3.12-slim
+  command: ["python", "-c"]
+  args:
+    - |
+      import json
+      with open("/weave-input/input.json") as f:
+          inputs = json.load(f)
+      fetch_result = inputs["fetch"]
+      valid = fetch_result.get("row_count", 0) > 0
+      print(f"validating dataset {fetch_result['dataset']}...")
+      print(json.dumps({"valid": valid, "dataset": fetch_result["dataset"]}))
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: showroom-step-io
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: fetch
+      jobTemplateRef:
+        name: showroom-data-fetcher
+      producesOutput: true
+
+    - name: validate
+      jobTemplateRef:
+        name: showroom-data-validator
+      dependsOn: [fetch]
+      consumesOutputFrom: [fetch]
+      runOnSuccess: true
+      producesOutput: true
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: showroom-step-io-trigger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: showroom-step-io
+  type: OnDemand
+{{- end }}

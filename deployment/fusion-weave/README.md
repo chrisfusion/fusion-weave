@@ -25,7 +25,7 @@ helm upgrade --install fusion-weave . \
   --set namespaceCreate=false
 ```
 
-### With SA token auth + sample chain
+### With SA token auth + showroom (Tier 1)
 
 ```bash
 helm upgrade --install fusion-weave . \
@@ -35,8 +35,8 @@ helm upgrade --install fusion-weave . \
   --set namespace=fusion \
   --set namespaceCreate=false \
   --set api.auth.saAuthEnabled=true \
-  --set samples.enabled=true \
-  --set samples.sharedStorage.storageClassName=csi-hostpath-sc
+  --set showroom.enabled=true \
+  --set showroom.sharedStorage.storageClassName=csi-hostpath-sc
 ```
 
 ## Uninstalling
@@ -160,13 +160,43 @@ helm upgrade fusion-weave deployment/fusion-weave/ \
   --set api.auth.apiKeyEnabled=true
 ```
 
-### Samples
+### Showroom
+
+A curated, preseeded set of example WeaveChains/WeaveTriggers touring the platform's
+major features — `deployment/fusion-weave/templates/showroom/`, one file per chain.
+
+**Tier 1** (`showroom.chains.*`) is fully self-contained (busybox/nginx images only,
+no external dependency) — installs and runs immediately:
 
 | Key | Default | Description |
 |---|---|---|
-| `samples.enabled` | `false` | Deploy sample WeaveJobTemplate, WeaveChain, and WeaveTrigger resources. Provides a working shared-storage demo chain. |
-| `samples.sharedStorage.size` | `500Mi` | PVC size for the demo chain's shared storage volume. |
-| `samples.sharedStorage.storageClassName` | `""` | StorageClass to use (must support ReadWriteMany). On minikube: `csi-hostpath-sc` (requires `minikube addons enable csi-hostpath-driver`). Leave empty to use the cluster default. |
+| `showroom.enabled` | `false` | Master switch for the showroom. Individual chains below are still gated by their own flag. |
+| `showroom.chains.dagBasics` | `true` | Fan-out/fan-in DAG + a failure-only cleanup branch (`showroom-dag-basics`). |
+| `showroom.chains.sharedStorage` | `true` | Two parallel writers + a reader proving `sharedStorage` persists across steps (`showroom-shared-storage`). |
+| `showroom.chains.deployIngress` | `true` | build → deploy (nginx, Deploy-kind step + `WeaveIngressRule`) → smoke-test (`showroom-deploy-ingress`). Requires `ingress.hostSuffix` set, or the WeaveServiceTemplate stays `status.valid=false`. |
+| `showroom.chains.stepIO` | `true` | fetch → validate using `producesOutput`/`consumesOutputFrom` (`showroom-step-io`). |
+| `showroom.chains.triggerOnDemand` | `true` | `OnDemand` trigger attached to `showroom-dag-basics`. |
+| `showroom.chains.triggerCron` | `true` | `Cron` trigger (6-field, seconds-first) attached to `showroom-dag-basics`. |
+| `showroom.chains.triggerBatchCron` | `true` | `BatchCron` trigger + ConfigMap-driven job list (`showroom-batch-cron`); genuinely fireable, no external broker needed. |
+| `showroom.chains.triggerKafka` | `false` | `Kafka` trigger (`showroom-s3-ingest`); only fires against a reachable broker — off by default. Point `showroom.kafka.brokers`/`topic` at your own instance (matches `deployment/local-dev/redpanda-values.yaml` conventions) before enabling. |
+| `showroom.sharedStorage.size` | `500Mi` | PVC size for the sharedStorage demo chain. |
+| `showroom.sharedStorage.storageClassName` | `""` | StorageClass to use (must support ReadWriteMany). On minikube: `csi-hostpath-sc` (requires `minikube addons enable csi-hostpath-driver`). Leave empty to use the cluster default. |
+| `showroom.deployIngress.ingressName` | `showroom` | DNS-label hostname prefix for the deployIngress demo; full host is `<ingressName>.<ingress.hostSuffix>`. |
+| `showroom.kafka.brokers` | `[redpanda-0.redpanda.redpanda.svc.cluster.local:9093]` | Broker list for the triggerKafka demo. |
+| `showroom.kafka.topic` | `s3-events` | Topic for the triggerKafka demo. |
+| `showroom.kafka.consumerGroup` | `fusion-weave-showroom` | Consumer group for the triggerKafka demo. |
+
+**Tier 2** (`showroom.codeSourceApps.*`) deploys real artifacts built from
+`../fusion-testcases/testcases_v2/` via fusion-forge and published to fusion-index
+under tag `stable` — see `testcases_v2/README.md`. Off by default so Tier 1 still
+installs standalone; enable only once those artifacts already exist:
+
+| Key | Default | Description |
+|---|---|---|
+| `showroom.codeSourceApps.enabled` | `false` | Master switch for Tier 2. |
+| `showroom.codeSourceApps.streamlitShowcase` | `true` | Deploys `app.streamlit-showcase` via `codeSource` on a Deploy-kind step (`showroom-streamlit-showcase`). |
+| `showroom.codeSourceApps.batchReport` | `true` | Runs `app.batch-report-generator` via `codeSource` on a Job-kind step, `producesOutput: true` (`showroom-batch-report`), fired `OnDemand`. |
+| `showroom.codeSourceApps.batchMetadata` | `true` | Runs `app.batch-metadata-reader` via `codeSource` on a Job-kind step (`showroom-batch-metadata`), fired by a **`BatchCron`** trigger (`showroom-batch-metadata-cron`, ConfigMap `showroom-batch-metadata-jobs`) instead of `OnDemand` — the step reads back both its own artifact metadata (`WEAVE_*`) and the firing job's `JOB_*`/`JOB_METADATA` env vars, tying `codeSource` and `BatchCron` together. |
 
 ## Creating an API Key
 

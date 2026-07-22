@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom: Cron trigger — fires every 10 minutes.
+#
+# Note the 6-field schedule (seconds-first) — the Cron trigger type uses
+# robfig/cron with cron.WithSeconds(); this differs from BatchCron job
+# schedules (5-field, standard cron, see trigger-batchcron.yaml).
+#
+# Attaches to showroom-dag-basics (dag-basics.yaml) — requires
+# showroom.chains.dagBasics=true as well, or this points at a chain that
+# doesn't exist.
+{{- if and .Values.showroom.enabled .Values.showroom.chains.triggerCron }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: showroom-dag-basics-cron
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: showroom-dag-basics
+  type: Cron
+  schedule: "0 */10 * * * *"   # every 10 minutes (6-field, seconds-first)
+  parameterOverrides:
+    - name: RUN_ENV
+      value: showroom
+{{- end }}

@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom: Kafka trigger — fires one WeaveRun per matching message.
+#
+# Off by default (showroom.chains.triggerKafka=false) — the consumer only
+# does anything useful against a reachable broker. Point
+# showroom.kafka.brokers/topic at your own Redpanda/Kafka instance before
+# enabling (deployment/local-dev/redpanda-values.yaml sets up a dev Redpanda
+# with MinIO bucket events forwarded to topic "s3-events" — the default here
+# matches that convention).
+#
+# Payload must be a MinIO S3 event-notification JSON envelope for
+# eventFilter/bucketFilter matching and the S3_* env vars to populate.
+{{- if and .Values.showroom.enabled .Values.showroom.chains.triggerKafka }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: showroom-s3-event-echo
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "event=$(S3_EVENT_NAME) bucket=$(S3_BUCKET) key=$(S3_KEY) size=$(S3_SIZE)"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: showroom-s3-ingest
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: handle-event
+      jobTemplateRef:
+        name: showroom-s3-event-echo
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: showroom-s3-ingest-kafka
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: showroom-s3-ingest
+  type: Kafka
+  kafka:
+    brokers:
+      {{- range .Values.showroom.kafka.brokers }}
+      - {{ . | quote }}
+      {{- end }}
+    topic: {{ .Values.showroom.kafka.topic | quote }}
+    consumerGroup: {{ .Values.showroom.kafka.consumerGroup | quote }}
+    eventFilter: ["put"]
+{{- end }}

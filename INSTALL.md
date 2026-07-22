@@ -156,7 +156,7 @@ helm upgrade --install fusion-weave deployment/fusion-weave/ \
   --set api.auth.saAuthEnabled=true
 ```
 
-**With sample chains (shared-storage demo):**
+**With the showroom (Tier 1 — self-contained example chains, includes a shared-storage demo):**
 ```bash
 # First enable the RWX storage addon on minikube:
 minikube addons enable csi-hostpath-driver
@@ -167,9 +167,11 @@ helm upgrade --install fusion-weave deployment/fusion-weave/ \
   --set image.pullPolicy=Never \
   --set namespace=fusion \
   --set namespaceCreate=false \
-  --set samples.enabled=true \
-  --set samples.sharedStorage.storageClassName=csi-hostpath-sc
+  --set showroom.enabled=true \
+  --set showroom.sharedStorage.storageClassName=csi-hostpath-sc
 ```
+See `deployment/fusion-weave/README.md` ("Showroom" section) for the full list of
+example chains and the Tier 2 flags that deploy real testcases_v2 artifacts.
 
 ### Using a values file (recommended for non-trivial configs)
 

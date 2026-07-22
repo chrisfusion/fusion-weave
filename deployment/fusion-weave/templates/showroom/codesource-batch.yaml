@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom (Tier 2): runs the real app.batch-report-generator artifact as a
+# Job-kind step (WeaveJobTemplate.spec.codeSource, not Deploy) — built from
+# ../fusion-testcases/testcases_v2/app-builds/batch-report-generator by
+# fusion-forge and published to fusion-index under tag "stable".
+#
+# Reuses the same runner image as the streamlit showcase: the code-loader
+# only downloads files as-is (venv tarball + main.py + metadata.yaml, no
+# extraction) — the runner image's entrypoint is what extracts the venv and
+# executes main.py, regardless of runner.type. If your runner image only
+# handles web-style runner.type values, point this at a runner image variant
+# that supports a bare script entrypoint instead.
+#
+# Requires the artifact already published — see testcases_v2/README.md, or
+# apply ../fusion-forge/config/samples/gitwatcher_app_autobuild.yaml.
+#
+# Gated by showroom.enabled && showroom.codeSourceApps.enabled && showroom.codeSourceApps.batchReport.
+{{- if and .Values.showroom.enabled .Values.showroom.codeSourceApps.enabled .Values.showroom.codeSourceApps.batchReport }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: showroom-batch-report
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: fusion-runner-python312:local
+  env:
+    - name: ROW_COUNT
+      value: "1000"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  codeSource:
+    artifactName: app.batch-report-generator
+    tag: stable
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: showroom-batch-report
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: report
+      stepKind: Job
+      jobTemplateRef:
+        name: showroom-batch-report
+      producesOutput: true
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: showroom-batch-report-trigger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: showroom-batch-report
+  type: OnDemand
+{{- end }}

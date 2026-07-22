@@ -1,0 +1,139 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom: build → deploy → smoke-test, with a real Ingress rule.
+#
+#   build  ──► deploy (nginx, Deploy-kind step + Ingress)  ──► smoke-test
+#
+# Requires ingress.hostSuffix (top-level Helm value) to be set cluster-wide —
+# otherwise WeaveServiceTemplate showroom-http stays status.valid=false and
+# the "deploy" step never progresses.
+#
+# Fire manually:
+#   kubectl annotate weavetrigger showroom-deploy-ingress-trigger fusion-platform.io/fire=true --overwrite -n {{ .Release.Namespace }}
+{{- if and .Values.showroom.enabled .Values.showroom.chains.deployIngress }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: showroom-build-step
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "Building artifact..."
+      sleep 2
+      echo "Build complete."
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: showroom-smoke-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "Running smoke test against deployed service..."
+      wget -qO- --timeout=10 http://showroom-deploy-ingress-deploy/ >/dev/null && echo "Smoke test passed." || (echo "Smoke test failed." && exit 1)
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveServiceTemplate
+metadata:
+  name: showroom-http
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: nginx:alpine
+  replicas: 1
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 80
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  serviceType: ClusterIP
+  unhealthyDuration: "5m"
+  revisionHistoryLimit: 2
+  ingress:
+    rules:
+      - name: {{ .Values.showroom.deployIngress.ingressName | quote }}
+        path: /
+        pathType: Prefix
+        servicePort: http
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: showroom-deploy-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: build
+      stepKind: Job
+      jobTemplateRef:
+        name: showroom-build-step
+      runOnSuccess: true
+
+    - name: deploy
+      stepKind: Deploy
+      serviceTemplateRef:
+        name: showroom-http
+      dependsOn: [build]
+      runOnSuccess: true
+
+    - name: smoke-test
+      stepKind: Job
+      jobTemplateRef:
+        name: showroom-smoke-test
+      dependsOn: [deploy]
+      runOnSuccess: true
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: showroom-deploy-ingress-trigger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: showroom-deploy-ingress
+  type: OnDemand
+{{- end }}

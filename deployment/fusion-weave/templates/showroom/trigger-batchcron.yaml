@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom: BatchCron trigger — many independently-scheduled jobs sharing one
+# trigger, driven by a ConfigMap (key "jobs.yaml"). Self-contained, no
+# external broker — genuinely fires on minikube.
+#
+# Note: job schedules inside jobs.yaml are standard 5-field cron (no seconds
+# field) — different from the Cron trigger type's 6-field seconds-first
+# schedule (see trigger-cron.yaml). Don't mix the two formats up.
+{{- if and .Values.showroom.enabled .Values.showroom.chains.triggerBatchCron }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: showroom-batch-echo
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "job=$(JOB_ID) name=$(JOB_NAME) topic=$(JOB_TOPIC) schedule=$(JOB_SCHEDULE)"
+      echo "metadata=$(JOB_METADATA)"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: showroom-batch-cron
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: run
+      jobTemplateRef:
+        name: showroom-batch-echo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: showroom-batch-cron-jobs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+    fusion-platform.io/batch-trigger: showroom-batch-cron
+data:
+  jobs.yaml: |
+    - job:
+        id: "showroom-nightly-export"
+        name: "nightly-export"
+        topic: "reporting"
+        maintainer: "showroom"
+        schedule: "0 2 * * *"
+        metadata:
+          kind: export
+    - job:
+        id: "showroom-hourly-sync"
+        name: "hourly-sync"
+        topic: "sync"
+        maintainer: "showroom"
+        schedule: "0 * * * *"
+        metadata:
+          kind: sync
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: showroom-batch-cron
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: showroom-batch-cron
+  type: BatchCron
+  batchCron:
+    jobsConfigMapRef:
+      name: showroom-batch-cron-jobs
+{{- end }}

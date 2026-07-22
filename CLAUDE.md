@@ -158,10 +158,19 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - Install on minikube: `helm upgrade --install fusion-weave deployment/fusion-weave/ --set image.repository=fusion-weave-operator --set image.tag=latest --set image.pullPolicy=Never --set namespace=fusion --set namespaceCreate=false`
 - `namespaceCreate=false` when namespace pre-exists (avoids Helm ownership conflict on re-install)
 - CRDs live in `crds/` — Helm installs them first, never deletes on uninstall; update manually with `kubectl apply -f deployment/fusion-weave/crds/` after `make generate`
-- Deploy with samples (shared-storage demo chain): add `--set samples.enabled=true --set samples.sharedStorage.storageClassName=csi-hostpath-sc`
+- Deploy with the showroom (Tier 1, self-contained demo tour): add `--set showroom.enabled=true --set showroom.sharedStorage.storageClassName=csi-hostpath-sc`
 - `codeSource.pollInterval` — Go duration string controlling how often the chain controller polls fusion-index for tag changes (default `"60s"`); sets `CODE_SOURCE_POLL_INTERVAL` on the operator pod.
 - `api.enabled=false` to skip deploying the API server entirely.
 - `api.auth.saAuthEnabled=true` to enable SA TokenReview auth (also creates ClusterRole + ClusterRoleBinding for tokenreviews).
+
+## Showroom (deployment/fusion-weave/templates/showroom/)
+- Formerly the single `samples.yaml`/`samples.*` demo (renamed — `samples.enabled` no longer exists). One file per chain under `templates/showroom/`, each independently gated by `showroom.enabled` AND its own `showroom.chains.<name>` / `showroom.codeSourceApps.<name>` flag — see the values.yaml `showroom:` block for the full flag list.
+- Tier 1 (`showroom.chains.*`, all default `true` except `triggerKafka`) is fully self-contained (busybox/nginx images) and installs with zero external dependency. Tier 2 (`showroom.codeSourceApps.*`, default `false`) deploys real artifacts built from `../fusion-testcases/testcases_v2/` via fusion-forge and published to fusion-index under tag `stable` — those artifacts must already exist before enabling Tier 2, see `../fusion-testcases/testcases_v2/README.md`.
+- `trigger-ondemand.yaml`/`trigger-cron.yaml` attach triggers to `showroom-dag-basics` (from `dag-basics.yaml`) — enabling one without `showroom.chains.dagBasics=true` leaves the trigger pointing at a chain that doesn't exist.
+- `showroom.chains.triggerBatchCron`'s job schedules (in the `showroom-batch-cron-jobs` ConfigMap) are standard 5-field cron (no seconds) — different from `showroom.chains.triggerCron`'s 6-field seconds-first `WeaveTrigger.spec.schedule`. Don't copy one format into the other.
+- `showroom.chains.deployIngress` requires the top-level `ingress.hostSuffix` Helm value already set cluster-wide, or `showroom-http` stays `status.valid=false` and the chain's deploy step never progresses.
+- `showroom.chains.triggerKafka` defaults to `false` — the Kafka consumer only does anything against a reachable broker; point `showroom.kafka.brokers`/`topic` at a real instance (matches `deployment/local-dev/redpanda-values.yaml` conventions: topic `s3-events`) before enabling.
+- `trigger-batchcron.yaml` (Tier 1, busybox) and `codesource-batchcron.yaml` (Tier 2, `showroom.codeSourceApps.batchMetadata`) are two separate `BatchCron` demos, not variants of each other — "batch" means the trigger type in one and a non-web app-build shape in the other. `codesource-batchcron.yaml` is the one that combines both `codeSource` and `BatchCron`: the fired job reads back its own artifact metadata (`WEAVE_*`) alongside the firing job's `JOB_*`/`JOB_METADATA` env vars.
 
 ## Monitoring API (internal/monitoring/)
 - Routes mounted at `/monitor/v1/` — enabled with `MONITORING_ENABLED=true`; disabled by default.

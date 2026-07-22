@@ -1,0 +1,102 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom: core DAG shape — fan-out, fan-in, and a failure branch.
+#
+#   extract --> transform-a --|
+#                              +--> load
+#   extract --> transform-b --|
+#
+#   extract --> cleanup-on-failure   (runs only if extract fails)
+#
+# Gated by showroom.enabled && showroom.chains.dagBasics.
+# The trigger-ondemand.yaml / trigger-cron.yaml showroom files attach
+# triggers to this chain (showroom-dag-basics) — enabling those without this
+# file leaves them pointing at a chain that doesn't exist.
+{{- if and .Values.showroom.enabled .Values.showroom.chains.dagBasics }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveJobTemplate
+metadata:
+  name: showroom-echo
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: busybox:latest
+  command: ["/bin/sh", "-c"]
+  args: ["echo step=$(STEP_NAME) outcome=$(OUTCOME)"]
+  env:
+    - name: STEP_NAME
+      value: "default"
+    - name: OUTCOME
+      value: "ok"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  retryPolicy:
+    maxRetries: 2
+    backoffSeconds: 5
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: showroom-dag-basics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: extract
+      jobTemplateRef:
+        name: showroom-echo
+      envOverrides:
+        - name: STEP_NAME
+          value: extract
+
+    - name: transform-a
+      jobTemplateRef:
+        name: showroom-echo
+      dependsOn: [extract]
+      runOnSuccess: true
+      runOnFailure: false
+      envOverrides:
+        - name: STEP_NAME
+          value: transform-a
+
+    - name: transform-b
+      jobTemplateRef:
+        name: showroom-echo
+      dependsOn: [extract]
+      runOnSuccess: true
+      runOnFailure: false
+      envOverrides:
+        - name: STEP_NAME
+          value: transform-b
+
+    - name: load
+      jobTemplateRef:
+        name: showroom-echo
+      dependsOn: [transform-a, transform-b]
+      runOnSuccess: true
+      runOnFailure: false
+      envOverrides:
+        - name: STEP_NAME
+          value: load
+
+    - name: cleanup-on-failure
+      jobTemplateRef:
+        name: showroom-echo
+      dependsOn: [extract]
+      runOnSuccess: false
+      runOnFailure: true
+      envOverrides:
+        - name: STEP_NAME
+          value: cleanup-on-failure
+        - name: OUTCOME
+          value: failed
+{{- end }}

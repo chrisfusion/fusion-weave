@@ -255,13 +255,35 @@ backup:
     accessKeyId: ""
     secretAccessKey: ""
 
-# Sample resources deployed alongside the operator.
-# Disabled by default — enable to get a working shared-storage demo chain.
-# Deploy with: helm upgrade --install ... --set samples.enabled=true
-samples:
+# Showroom: a curated, preseeded set of example WeaveChains demonstrating the
+# platform's major features. Disabled by default.
+# Deploy the full tour with: helm upgrade --install ... --set showroom.enabled=true
+#
+# Tier 1 (showroom.chains.*) is fully self-contained — busybox/nginx images
+# only, no external dependency, installs and runs immediately.
+#
+# Tier 2 (showroom.codeSourceApps.*) deploys real artifacts built from
+# ../fusion-testcases/testcases_v2 via fusion-forge and published to
+# fusion-index under tag "stable". Those artifacts must already exist before
+# enabling this tier — see testcases_v2/README.md. Gated separately from Tier
+# 1 so the zero-dependency tour still installs standalone.
+showroom:
   enabled: false
 
-  # Shared storage settings used by the demo chain.
+  chains:
+    dagBasics: true
+    sharedStorage: true
+    deployIngress: true
+    stepIO: true
+    triggerOnDemand: true
+    triggerCron: true
+    triggerBatchCron: true
+    # triggerKafka only fires against a reachable broker. Off by default —
+    # point showroom.kafka.brokers/topic at your own broker before enabling
+    # (see deployment/local-dev/redpanda-values.yaml for a dev Redpanda setup).
+    triggerKafka: false
+
+  # Shared storage settings used by the sharedStorage demo chain.
   sharedStorage:
     # size is the PVC capacity requested for the demo run.
     size: "500Mi"
@@ -270,3 +292,28 @@ samples:
     # NOTE: the StorageClass must support ReadWriteMany (e.g. NFS, CephFS).
     # The default "standard" class on minikube does NOT support RWX.
     storageClassName: ""
+
+  # deployIngress demo chain's Ingress rule settings. ingressName is the DNS-label
+  # hostname prefix — the full Ingress host becomes "<ingressName>.<ingress.hostSuffix>".
+  # Requires the cluster-wide ingress.hostSuffix (above) to already be set —
+  # otherwise the WeaveServiceTemplate stays status.valid=false and the chain
+  # never progresses past the deploy step.
+  deployIngress:
+    ingressName: showroom
+
+  # Kafka broker settings used by the triggerKafka demo chain (only read when
+  # showroom.chains.triggerKafka=true). Matches deployment/local-dev conventions.
+  kafka:
+    brokers:
+      - redpanda-0.redpanda.redpanda.svc.cluster.local:9093
+    topic: s3-events
+    consumerGroup: fusion-weave-showroom
+
+  codeSourceApps:
+    enabled: false
+    streamlitShowcase: true
+    batchReport: true
+    # batchMetadata: a codeSource-backed Job step fired on a BatchCron
+    # schedule (not OnDemand like the other two) — the step reads both its
+    # own artifact metadata and the firing job's BatchCron metadata.
+    batchMetadata: true

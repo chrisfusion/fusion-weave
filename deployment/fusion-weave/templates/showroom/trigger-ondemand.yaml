@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom: OnDemand trigger — fire by annotation.
+#
+#   kubectl annotate weavetrigger showroom-dag-basics-ondemand fusion-platform.io/fire=true --overwrite -n {{ .Release.Namespace }}
+#
+# Attaches to showroom-dag-basics (dag-basics.yaml) — requires
+# showroom.chains.dagBasics=true as well, or this points at a chain that
+# doesn't exist.
+{{- if and .Values.showroom.enabled .Values.showroom.chains.triggerOnDemand }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: showroom-dag-basics-ondemand
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: showroom-dag-basics
+  type: OnDemand
+{{- end }}

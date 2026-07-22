@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Showroom (Tier 2): deploys the real app.streamlit-showcase artifact via
+# codeSource — built from ../fusion-testcases/testcases_v2/app-builds/streamlit-showcase
+# by fusion-forge and published to fusion-index under tag "stable".
+#
+# Requires:
+#   - The artifact already exists in fusion-index (see testcases_v2/README.md,
+#     or apply ../fusion-forge/config/samples/gitwatcher_app_autobuild.yaml).
+#   - codeSource.loaderImage (top-level Helm value) set to a loader image that
+#     actually exists in your cluster — the built-in default
+#     fusion-code-loader:latest does not exist on minikube.
+#
+# Gated by showroom.enabled && showroom.codeSourceApps.enabled && showroom.codeSourceApps.streamlitShowcase.
+#
+# Monitor: kubectl port-forward svc/showroom-streamlit-showcase-app 8501:8501 -n {{ .Release.Namespace }}
+{{- if and .Values.showroom.enabled .Values.showroom.codeSourceApps.enabled .Values.showroom.codeSourceApps.streamlitShowcase }}
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveServiceTemplate
+metadata:
+  name: showroom-streamlit-showcase
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  image: fusion-runner-python312:local
+  replicas: 1
+  ports:
+    - name: http
+      port: 8501
+      targetPort: 8501
+      protocol: TCP
+  resources:
+    requests:
+      cpu: 200m
+      memory: 500Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  readinessProbe:
+    httpGet:
+      path: /_stcore/health
+      port: 8501
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 6
+  serviceType: ClusterIP
+  unhealthyDuration: "5m"
+  revisionHistoryLimit: 2
+  codeSource:
+    artifactName: app.streamlit-showcase
+    tag: stable
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveChain
+metadata:
+  name: showroom-streamlit-showcase
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  failurePolicy: StopAll
+  concurrencyPolicy: Wait
+  steps:
+    - name: app
+      stepKind: Deploy
+      serviceTemplateRef:
+        name: showroom-streamlit-showcase
+      runOnSuccess: true
+---
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: showroom-streamlit-showcase-trigger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" . | nindent 4 }}
+spec:
+  chainRef:
+    name: showroom-streamlit-showcase
+  type: OnDemand
+{{- end }}
