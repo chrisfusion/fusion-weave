@@ -164,7 +164,24 @@ Defines a reusable job container spec. Steps in a WeaveChain reference these by 
     "parallelism": 1,
     "completions": 1,
     "activeDeadlineSeconds": 300,
-    "serviceAccountName": "my-sa"
+    "serviceAccountName": "my-sa",
+    "podSecurityContext": {
+      "runAsNonRoot": true,
+      "runAsUser": 1000,
+      "fsGroup": 1000
+    },
+    "containerSecurityContext": {
+      "allowPrivilegeEscalation": false,
+      "readOnlyRootFilesystem": true
+    },
+    "codeSource": {
+      "artifactName": "app.my-batch-job",
+      "tag": "stable",
+      "mountPath": "/weave-code",
+      "indexURL": "http://fusion-index-backend.fusion.svc.cluster.local:8080",
+      "loaderImage": "fusion-weave-operator:0.4.0",
+      "loaderImagePullPolicy": "IfNotPresent"
+    }
   }
 }
 ```
@@ -176,6 +193,10 @@ Defines a reusable job container spec. Steps in a WeaveChain reference these by 
 ```json
 {"name": "creds", "mountPath": "/etc/creds", "secretName": "my-secret"}
 ```
+
+`podSecurityContext` / `containerSecurityContext`, when set, override the operator-wide `WORKLOAD_SECURITY_DEFAULTS` entirely for pods created from this template — they accept the full `corev1.PodSecurityContext` / `corev1.SecurityContext` field sets (`runAsUser`, `runAsGroup`, `fsGroup`, `seccompProfile`, `allowPrivilegeEscalation`, `capabilities`, etc.).
+
+`codeSource`, when set, injects a `code-loader` init container that resolves `tag` to a concrete artifact version via fusion-index and copies the artifact's files as-is into `mountPath` (default `/weave-code`) before the job container starts. `artifactName` and `tag` are required when `codeSource` is set; `indexURL` falls back to the `FUSION_INDEX_URL` env var, then to the in-cluster default. Because every `WeaveRun` creates a fresh Job pod, the tag is re-resolved to its current version on every run — unlike Deploy-kind `codeSource` (see WeaveServiceTemplate below), no polling or rolling-restart mechanism is needed.
 
 ### List
 
@@ -333,6 +354,15 @@ Defines a long-running service (Deployment + Service + optional Ingress). Used b
     },
     "volumes": [],
     "serviceAccountName": "",
+    "podSecurityContext": {
+      "runAsNonRoot": true,
+      "runAsUser": 1000,
+      "fsGroup": 1000
+    },
+    "containerSecurityContext": {
+      "allowPrivilegeEscalation": false,
+      "readOnlyRootFilesystem": true
+    },
     "replicas": 2,
     "ports": [
       {"name": "http", "port": 80, "targetPort": 8080, "protocol": "TCP"}
@@ -361,7 +391,15 @@ Defines a long-running service (Deployment + Service + optional Ingress). Used b
       "tlsSecretName": "my-api-tls"
     },
     "unhealthyDuration": "5m",
-    "revisionHistoryLimit": 3
+    "revisionHistoryLimit": 3,
+    "codeSource": {
+      "artifactName": "app.my-api",
+      "tag": "stable",
+      "mountPath": "/weave-code",
+      "indexURL": "http://fusion-index-backend.fusion.svc.cluster.local:8080",
+      "loaderImage": "fusion-weave-operator:0.4.0",
+      "loaderImagePullPolicy": "IfNotPresent"
+    }
   }
 }
 ```
@@ -371,6 +409,10 @@ Defines a long-running service (Deployment + Service + optional Ingress). Used b
 `ingress.rules[].name` is a DNS label only (e.g. `my-api`), **not** a full hostname — the API cannot be used to point an Ingress at an arbitrary domain. The operator appends the cluster-wide `ingress.hostSuffix` (set once at install time) to build the real hostname, e.g. `my-api.svc.instance-a.fusion.company.com`. A template with `ingress` set is rejected (`status.valid=false`) until the operator has a suffix configured. The same applies to `WeaveRun.spec.stepOverrides[].ingressName`.
 
 `serviceType` accepts `ClusterIP`, `NodePort`, or `LoadBalancer` (default `ClusterIP`).
+
+`podSecurityContext` / `containerSecurityContext`, when set, override the operator-wide `WORKLOAD_SECURITY_DEFAULTS` entirely for pods created from this template (`containerSecurityContext` applies to both the service container and the `code-loader` init container when `codeSource` is configured) — they accept the full `corev1.PodSecurityContext` / `corev1.SecurityContext` field sets.
+
+`codeSource`, when set, injects a `code-loader` init container that resolves `tag` to a concrete artifact version via fusion-index and copies the artifact's files as-is into `mountPath` (default `/weave-code`) before the main container starts. `artifactName` and `tag` are required when `codeSource` is set; `indexURL` falls back to the `FUSION_INDEX_URL` env var, then to the in-cluster default. Unlike Job-kind steps, the init container fires on every pod start, so a running Deployment does not pick up a new tagged version automatically — trigger a rolling restart with `kubectl annotate weavechain <chain-name> fusion-platform.io/reload-deploy-step=<stepName>@<version> --overwrite -n fusion` (or the chain controller's own tag-polling loop, `codeSource.pollInterval`).
 
 ### List
 
@@ -498,7 +540,8 @@ Defines the DAG of steps (job or deploy) that execute together as a pipeline.
     "sharedStorage": {
       "size": "1Gi",
       "storageClassName": "csi-hostpath-sc"
-    }
+    },
+    "authSecretRef": {"name": "keycloak-service-creds"}
   }
 }
 ```
@@ -516,6 +559,8 @@ Defines the DAG of steps (job or deploy) that execute together as a pipeline.
 **`concurrencyPolicy`**: `Wait` (default — queue new runs) or `Forbid` (skip if one is already running).
 
 **`sharedStorage`**: mounts a per-run RWX PVC at `/weave-shared` in every job pod. Requires a StorageClass that supports ReadWriteMany.
+
+**`authSecretRef`**: optionally names a Secret injected via `envFrom` into every step pod of the chain (Job and Deploy kind alike). Its keys become environment variables that runner-side helper libraries (e.g. the `fusion-runner` Python `KeycloakAuth` helper) use to obtain access tokens. Overridable per-trigger (`WeaveTriggerSpec.authSecretRefOverride`) and per-run (`WeaveRunSpec.authSecretRefOverride`); precedence is run > trigger > chain.
 
 ### List
 
@@ -618,7 +663,9 @@ Attaches scheduling or external-event firing to a WeaveChain.
   "spec": {
     "chainRef": {"name": "etl-pipeline"},
     "type": "Cron",
-    "schedule": "0 2 * * *",
+    "schedule": "0 0 2 * * *",
+    "paused": false,
+    "authSecretRefOverride": {"name": "keycloak-service-creds"},
     "parameterOverrides": [
       {"name": "ENV", "value": "production"}
     ]
@@ -626,16 +673,20 @@ Attaches scheduling or external-event firing to a WeaveChain.
 }
 ```
 
-**`type`**: `OnDemand`, `Cron`, or `Webhook`.
+**`type`**: `OnDemand`, `Cron`, `Webhook`, `BatchCron`, or `Kafka`. `BatchCron` and `Kafka` also have dedicated convenience endpoints under `/api/v1/batchtriggers` and `/api/v1/kafkatriggers` — see below.
 
-**Cron trigger** — requires `schedule` (standard cron expression):
+**`paused`**: suspends scheduling for any trigger type when `true`. Runs already in progress are unaffected; no new runs are created until set back to `false`.
+
+**`authSecretRefOverride`**: overrides `WeaveChainSpec.authSecretRef` for every run created by this trigger. Takes precedence over the chain default; yields to `WeaveRunSpec.authSecretRefOverride` on the resulting run.
+
+**Cron trigger** — requires `schedule` (6-field, seconds-first cron expression — `internal/trigger` uses `cron.WithSeconds()`, so this is **not** standard 5-field cron):
 
 ```json
 {
   "spec": {
     "chainRef": {"name": "etl-pipeline"},
     "type": "Cron",
-    "schedule": "*/15 * * * *"
+    "schedule": "0 */15 * * * *"
   }
 }
 ```
@@ -681,6 +732,44 @@ curl -X POST http://<cluster>:9090/hooks/etl \
   -H "Authorization: Bearer $(kubectl get secret webhook-token -n fusion -o jsonpath='{.data.token}' | base64 -d)"
 ```
 
+**BatchCron trigger** — fires individual jobs from a YAML job list stored in a ConfigMap; each job carries its own cron schedule and metadata injected as env vars. Prefer the dedicated `/api/v1/batchtriggers` endpoints below, which also manage the backing ConfigMap; this raw form is shown for completeness:
+
+```json
+{
+  "spec": {
+    "chainRef": {"name": "etl-pipeline"},
+    "type": "BatchCron",
+    "batchCron": {
+      "jobsConfigMapRef": {"name": "batchtrigger-daily-etl"}
+    }
+  }
+}
+```
+
+Note: schedules inside the ConfigMap's `jobs.yaml` are standard 5-field cron (no seconds field) — see the `/api/v1/batchtriggers` section below for the YAML format.
+
+**Kafka trigger** — fires one WeaveRun per consumed message, after applying `eventFilter`/`bucketFilter`:
+
+```json
+{
+  "spec": {
+    "chainRef": {"name": "etl-pipeline"},
+    "type": "Kafka",
+    "kafka": {
+      "brokers": ["redpanda-0.redpanda.redpanda.svc.cluster.local:9093"],
+      "topic": "s3-events",
+      "consumerGroup": "etl-pipeline-consumer",
+      "secretRef": {"name": "kafka-sasl-creds"},
+      "eventFilter": ["put"],
+      "bucketFilter": ["uploads"],
+      "maxConcurrentRuns": 5
+    }
+  }
+}
+```
+
+`kafka.brokers`, `kafka.topic`, and `kafka.consumerGroup` are required. `kafka.secretRef` optionally names a Secret with keys `username`, `password`, and optionally `mechanism` (`PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512`; defaults to `PLAIN`). `kafka.eventFilter` accepts `put`, `delete`, `get` (empty = all events); `kafka.bucketFilter` restricts by S3 bucket name (empty = all buckets). `kafka.maxConcurrentRuns` caps active WeaveRuns for this trigger — events received at the cap are skipped with the offset still committed (`0` = unlimited). Prefer the dedicated `/api/v1/kafkatriggers` endpoints below.
+
 ### List
 
 ```
@@ -709,7 +798,7 @@ curl -X POST http://localhost:8082/api/v1/triggers \
     "spec": {
       "chainRef": {"name": "etl-pipeline"},
       "type": "Cron",
-      "schedule": "0 2 * * *"
+      "schedule": "0 0 2 * * *"
     }
   }'
 ```
@@ -744,13 +833,303 @@ Update cron schedule:
 curl -X PATCH http://localhost:8082/api/v1/triggers/daily-etl \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/merge-patch+json" \
-  -d '{"spec": {"schedule": "0 4 * * *"}}'
+  -d '{"spec": {"schedule": "0 0 4 * * *"}}'
 ```
 
 ### Delete
 
 ```
 DELETE /api/v1/triggers/{name}
+```
+
+---
+
+## BatchCron Triggers
+
+`/api/v1/batchtriggers`
+
+Dedicated CRUD + lifecycle endpoints for `WeaveTrigger` objects of `type: BatchCron`. Unlike the generic `/api/v1/triggers` endpoints, these also manage the backing ConfigMap that holds the job list YAML — creating a batch trigger creates both the `WeaveTrigger` (owning) and a ConfigMap named `batchtrigger-<name>` (key `jobs.yaml`) in one call, and updating replaces that ConfigMap's contents. List/Get/Delete operate on the same underlying `WeaveTrigger` objects as `/api/v1/triggers`, filtered to `type: BatchCron`.
+
+### Fields
+
+The `jobs` string is YAML: a sequence of `job` entries, each with its own cron schedule (standard 5-field, no seconds — different from the `Cron` trigger type's 6-field seconds-first `schedule`) and metadata injected into the fired job's pod as `JOB_ID`, `JOB_NAME`, `JOB_TOPIC`, `JOB_MAINTAINER`, `JOB_STARTDATE`, `JOB_STARTTIME`, `JOB_SCHEDULE`, and `JOB_METADATA` (full metadata JSON) env vars:
+
+```json
+{
+  "name": "daily-etl",
+  "chainRef": {"name": "etl-pipeline"},
+  "jobs": "- job:\n    id: \"nightly-export\"\n    name: \"nightly-export\"\n    topic: \"reporting\"\n    maintainer: \"data-team\"\n    startdate: \"2026-04-12\"\n    starttime: \"02:00\"\n    schedule: \"0 2 * * *\"\n    metadata:\n      kind: export\n"
+}
+```
+
+`name`, `chainRef.name`, and `jobs` are required on Create. Each `job` entry requires `id` and `schedule`; `startdate`/`starttime` (format `YYYY-MM-DD` / `HH:MM`) optionally delay the job's first eligible fire.
+
+### List
+
+```
+GET /api/v1/batchtriggers
+```
+
+Returns a `WeaveTriggerList` filtered to `type: BatchCron` — same item shape as `GET /api/v1/triggers`.
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/batchtriggers
+```
+
+### Create
+
+```
+POST /api/v1/batchtriggers
+Content-Type: application/json
+```
+
+```bash
+curl -X POST http://localhost:8082/api/v1/batchtriggers \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "daily-etl",
+    "chainRef": {"name": "etl-pipeline"},
+    "jobs": "- job:\n    id: \"nightly-export\"\n    schedule: \"0 2 * * *\"\n"
+  }'
+```
+
+Returns `201 Created` with the full `WeaveTrigger` object. If the job YAML fails validation, returns `422 Unprocessable Entity` with `{"valid": false, "errors": [{"line": 2, "message": "..."}]}` and creates nothing. If the ConfigMap create fails after the `WeaveTrigger` was already created, the handler best-effort deletes the `WeaveTrigger` to avoid an orphaned/stuck object.
+
+### Get
+
+```
+GET /api/v1/batchtriggers/{name}
+```
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/batchtriggers/daily-etl
+```
+
+### Update (replace job list)
+
+```
+PUT /api/v1/batchtriggers/{name}
+Content-Type: application/json
+```
+
+Replaces the `jobs.yaml` contents of the backing ConfigMap. Re-validated the same way as Create.
+
+```bash
+curl -X PUT http://localhost:8082/api/v1/batchtriggers/daily-etl \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jobs": "- job:\n    id: \"nightly-export\"\n    schedule: \"0 3 * * *\"\n"
+  }'
+```
+
+### Patch
+
+```
+PATCH /api/v1/batchtriggers/{name}
+Content-Type: application/merge-patch+json
+```
+
+Applies a JSON Merge Patch directly to the `WeaveTrigger` object (not the ConfigMap) — use this for metadata/annotation changes, not job-list edits (use Update or Resume for those).
+
+```bash
+curl -X PATCH http://localhost:8082/api/v1/batchtriggers/daily-etl \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/merge-patch+json" \
+  -d '{"metadata": {"labels": {"env": "staging"}}}'
+```
+
+### Delete
+
+```
+DELETE /api/v1/batchtriggers/{name}
+```
+
+Deletes the `WeaveTrigger`; the backing ConfigMap is garbage-collected automatically via its owner reference.
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/api/v1/batchtriggers/daily-etl
+```
+
+### Stop
+
+```
+POST /api/v1/batchtriggers/{name}/stop
+```
+
+Sets `spec.paused = true`, suspending all scheduling for this trigger. Returns `409 Conflict` if already paused.
+
+```bash
+curl -X POST http://localhost:8082/api/v1/batchtriggers/daily-etl/stop \
+  -H "Authorization: Bearer $KEY"
+```
+
+### Resume
+
+```
+POST /api/v1/batchtriggers/{name}/resume
+Content-Type: application/json
+```
+
+Uploads a new job list YAML and sets `spec.paused = false` in one call.
+
+```bash
+curl -X POST http://localhost:8082/api/v1/batchtriggers/daily-etl/resume \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jobs": "- job:\n    id: \"nightly-export\"\n    schedule: \"0 2 * * *\"\n"}'
+```
+
+### Validate
+
+```
+POST /api/v1/batchtriggers/validate
+Content-Type: application/json
+```
+
+Parses the submitted job list YAML and returns line-level errors without touching Kubernetes — use this to validate before Create/Update/Resume.
+
+```bash
+curl -X POST http://localhost:8082/api/v1/batchtriggers/validate \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jobs": "- job:\n    id: \"nightly-export\"\n    schedule: \"0 2 * * *\"\n"}'
+```
+
+```json
+{"valid": true}
+```
+
+```json
+{
+  "valid": false,
+  "errors": [
+    {"line": 2, "message": "id is required"},
+    {"line": 4, "message": "invalid schedule \"bad cron\": ..."}
+  ]
+}
+```
+
+---
+
+## Kafka Triggers
+
+`/api/v1/kafkatriggers`
+
+Dedicated CRUD endpoints for `WeaveTrigger` objects of `type: Kafka`. List/Get/Update/Delete operate on the same underlying `WeaveTrigger` objects as `/api/v1/triggers`, filtered to `type: Kafka`. No Stop/Resume/Validate actions — use `PATCH .../{name}` with `{"spec": {"paused": true}}` to pause a Kafka trigger.
+
+### Fields
+
+```json
+{
+  "name": "s3-upload-notify",
+  "chainRef": {"name": "etl-pipeline"},
+  "kafka": {
+    "brokers": ["redpanda-0.redpanda.redpanda.svc.cluster.local:9093"],
+    "topic": "s3-events",
+    "consumerGroup": "etl-pipeline-consumer",
+    "secretRef": {"name": "kafka-sasl-creds"},
+    "eventFilter": ["put"],
+    "bucketFilter": ["uploads"],
+    "maxConcurrentRuns": 5
+  }
+}
+```
+
+`name`, `chainRef.name`, `kafka.brokers`, `kafka.topic`, and `kafka.consumerGroup` are required. See the WeaveTrigger Fields section above for the meaning of each `kafka.*` sub-field.
+
+### List
+
+```
+GET /api/v1/kafkatriggers
+```
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/kafkatriggers
+```
+
+### Create
+
+```
+POST /api/v1/kafkatriggers
+Content-Type: application/json
+```
+
+```bash
+curl -X POST http://localhost:8082/api/v1/kafkatriggers \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "s3-upload-notify",
+    "chainRef": {"name": "etl-pipeline"},
+    "kafka": {
+      "brokers": ["redpanda-0.redpanda.redpanda.svc.cluster.local:9093"],
+      "topic": "s3-events",
+      "consumerGroup": "etl-pipeline-consumer"
+    }
+  }'
+```
+
+Returns `201 Created` with the full `WeaveTrigger` object.
+
+### Get
+
+```
+GET /api/v1/kafkatriggers/{name}
+```
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/kafkatriggers/s3-upload-notify
+```
+
+### Update
+
+```
+PUT /api/v1/kafkatriggers/{name}
+Content-Type: application/json
+```
+
+Replaces `spec.kafka` in full; `kafka.brokers`, `kafka.topic`, and `kafka.consumerGroup` are required in the request body.
+
+```bash
+curl -X PUT http://localhost:8082/api/v1/kafkatriggers/s3-upload-notify \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "kafka": {
+      "brokers": ["redpanda-0.redpanda.redpanda.svc.cluster.local:9093"],
+      "topic": "s3-events",
+      "consumerGroup": "etl-pipeline-consumer",
+      "maxConcurrentRuns": 10
+    }
+  }'
+```
+
+### Patch
+
+```
+PATCH /api/v1/kafkatriggers/{name}
+Content-Type: application/merge-patch+json
+```
+
+```bash
+curl -X PATCH http://localhost:8082/api/v1/kafkatriggers/s3-upload-notify \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/merge-patch+json" \
+  -d '{"spec": {"paused": true}}'
+```
+
+### Delete
+
+```
+DELETE /api/v1/kafkatriggers/{name}
+```
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/api/v1/kafkatriggers/s3-upload-notify
 ```
 
 ---
@@ -773,7 +1152,17 @@ Represents a single execution of a WeaveChain. Created automatically by triggers
     "triggerRef": {"name": "daily-etl"},
     "parameterOverrides": [
       {"name": "DATE", "value": "2026-04-12"}
-    ]
+    ],
+    "stepOverrides": [
+      {
+        "stepName": "api-server",
+        "artifactName": "app.my-service",
+        "tag": "stable",
+        "ingressName": "my-service-run-1",
+        "indexURL": "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+      }
+    ],
+    "authSecretRefOverride": {"name": "keycloak-service-creds"}
   }
 }
 ```
@@ -783,6 +1172,10 @@ Represents a single execution of a WeaveChain. Created automatically by triggers
 `triggerRef` is optional — omit for manually created runs.
 
 `parameterOverrides` values are injected as environment variables into each job pod, taking precedence over the template and chain defaults.
+
+`stepOverrides` provides per-step deployment parameters for `stepKind: Deploy` steps. When a step name is listed here, the operator names the Deployment `<runName>-<stepName>` (owned by the WeaveRun, not the WeaveChain) and reads runner configuration from the artifact's `metadata.yaml` in fusion-index instead of from the `WeaveServiceTemplate` — this lets multiple runs of the same chain deploy independent, non-colliding service instances. `stepName`, `artifactName`, and `tag` are required per entry; `ingressName` (a DNS label, not a full hostname — same rule as `WeaveIngressRule.name`) is required if the chain step declares an Ingress; `indexURL` falls back the same way as `CodeSourceSpec.indexURL`. Steps not listed in `stepOverrides` are unaffected and continue to use the chain-owned `WeaveServiceTemplate` Deployment.
+
+`authSecretRefOverride` overrides `WeaveChainSpec.authSecretRef` (and any `WeaveTriggerSpec.authSecretRefOverride`) for this run only, injected via `envFrom` into every step pod of this run.
 
 ### Status
 
@@ -822,18 +1215,32 @@ Represents a single execution of a WeaveChain. Created automatically by triggers
         "completionTime": "2026-04-12T02:14:30Z",
         "outputCaptured": false
       }
-    ]
+    ],
+    "activeDeployments": {
+      "etl-pipeline-run-1-api-server": {
+        "deploymentName": "etl-pipeline-run-1-api-server",
+        "stepName": "api-server",
+        "health": "Healthy",
+        "currentRevision": "1",
+        "codeSourceArtifact": "app.my-service",
+        "codeSourceTag": "stable",
+        "codeSourceIndexURL": "http://fusion-index-backend.fusion.svc.cluster.local:8080",
+        "codeSourceDeployedVersion": "1.2.3"
+      }
+    }
   }
 }
 ```
 
 **`phase`**: `Pending` → `Running` → `Succeeded` | `Failed` | `Stopped`
 
-**`steps[].phase`**: `Pending`, `Running`, `Succeeded`, `Failed`, `Skipped`, `Retrying`
+**`steps[].phase`**: `Pending`, `Running`, `Succeeded`, `Failed`, `Skipped`, `Retrying`, `Deployed`. `Deployed` is non-terminal — it satisfies dependency checks for downstream steps but keeps the WeaveRun in `Running` phase for the lifetime of the service; the run only reaches `Succeeded` once no step is `Deployed`.
 
 **`steps[].outputCaptured`**: `true` when the operator has captured JSON stdout from this step's job.
 
 **`steps[].deploymentRef`**: set instead of `jobRef` for `stepKind: Deploy` steps.
+
+**`activeDeployments`**: present only when this run has `spec.stepOverrides`. Keyed by Deployment name (`<runName>-<stepName>`); tracks the code-source artifact/tag/version currently loaded for run-owned deploy steps, mirroring `WeaveChain.status.activeDeployments` for chain-owned ones.
 
 ### List
 
@@ -929,6 +1336,19 @@ curl -X PATCH http://localhost:8082/api/v1/runs/etl-manual-20260412 \
   -d '{"metadata": {"labels": {"env": "staging"}}}'
 ```
 
+### Stop
+
+```
+POST /api/v1/runs/{name}/stop
+```
+
+Patches `status.phase = Stopped` via the status subresource, triggering the operator's deploy-cleanup finalizer (tears down any `Deployed`-phase steps' Deployment/Service/Ingress) while keeping the run object in history. Returns `409 Conflict` if the run is already in a terminal phase (`Succeeded`, `Failed`, or `Stopped`).
+
+```bash
+curl -X POST http://localhost:8082/api/v1/runs/etl-manual-20260412/stop \
+  -H "Authorization: Bearer $KEY"
+```
+
 ### Delete
 
 ```
@@ -974,11 +1394,27 @@ curl -X DELETE -H "Authorization: Bearer $KEY" \
 | PUT | `/api/v1/triggers/{name}` | editor | Full replace a WeaveTrigger |
 | PATCH | `/api/v1/triggers/{name}` | editor | Partial update a WeaveTrigger |
 | DELETE | `/api/v1/triggers/{name}` | admin | Delete a WeaveTrigger |
+| GET | `/api/v1/batchtriggers` | viewer | List all BatchCron WeaveTriggers |
+| POST | `/api/v1/batchtriggers` | editor | Create a BatchCron trigger + its jobs ConfigMap |
+| GET | `/api/v1/batchtriggers/{name}` | viewer | Get a BatchCron trigger |
+| PUT | `/api/v1/batchtriggers/{name}` | editor | Replace the job list YAML |
+| PATCH | `/api/v1/batchtriggers/{name}` | editor | Partial update the WeaveTrigger object |
+| DELETE | `/api/v1/batchtriggers/{name}` | admin | Delete a BatchCron trigger and its ConfigMap |
+| POST | `/api/v1/batchtriggers/{name}/stop` | editor | Pause scheduling (`spec.paused=true`) |
+| POST | `/api/v1/batchtriggers/{name}/resume` | editor | Upload new job list and resume scheduling |
+| POST | `/api/v1/batchtriggers/validate` | editor | Validate job list YAML without touching Kubernetes |
+| GET | `/api/v1/kafkatriggers` | viewer | List all Kafka WeaveTriggers |
+| POST | `/api/v1/kafkatriggers` | editor | Create a Kafka trigger |
+| GET | `/api/v1/kafkatriggers/{name}` | viewer | Get a Kafka trigger |
+| PUT | `/api/v1/kafkatriggers/{name}` | editor | Full replace `spec.kafka` |
+| PATCH | `/api/v1/kafkatriggers/{name}` | editor | Partial update a Kafka trigger |
+| DELETE | `/api/v1/kafkatriggers/{name}` | admin | Delete a Kafka trigger |
 | GET | `/api/v1/runs` | viewer | List all WeaveRuns |
 | POST | `/api/v1/runs` | editor | Create a WeaveRun (manual trigger) |
 | GET | `/api/v1/runs/{name}` | viewer | Get a WeaveRun |
 | PUT | `/api/v1/runs/{name}` | editor | Full replace a WeaveRun |
 | PATCH | `/api/v1/runs/{name}` | editor | Partial update a WeaveRun |
+| POST | `/api/v1/runs/{name}/stop` | editor | Stop a run (`status.phase=Stopped`) |
 | DELETE | `/api/v1/runs/{name}` | admin | Delete a WeaveRun and its child resources |
 | GET | `/monitor/v1/runs` | viewer | List all WeaveRun summaries |
 | GET | `/monitor/v1/runs/{name}` | viewer | Run detail (run + jobs + events) |

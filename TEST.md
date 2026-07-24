@@ -1,11 +1,14 @@
-# Manual Testing Guide
+# Testing Guide
 
-End-to-end test playbook for the fusion-weave REST API (CRUD) and Monitoring API on a local minikube cluster.
+Two layers: fast package-level `go test` unit tests (no cluster required, run
+these first) and an end-to-end manual test playbook for the fusion-weave REST
+API (CRUD) and Monitoring API on a local minikube cluster.
 
 ---
 
 ## Table of Contents
 
+0. [Unit tests (go test)](#0-unit-tests-go-test)
 1. [Environment setup](#1-environment-setup)
 2. [Build and deploy](#2-build-and-deploy)
 3. [Enable monitoring API](#3-enable-monitoring-api)
@@ -26,6 +29,91 @@ End-to-end test playbook for the fusion-weave REST API (CRUD) and Monitoring API
 18. [Authentication](#18-authentication)
 19. [Error cases](#19-error-cases)
 20. [Cleanup](#20-cleanup)
+
+---
+
+## 0. Unit tests (go test)
+
+No cluster needed — run this before touching minikube at all.
+
+```bash
+make test
+# equivalent to: go test ./... -v
+```
+
+### Package coverage
+
+| Package | Test files | What's exercised |
+|---|---|---|
+| `internal/dag` | `graph_test.go` | Pure-Go DAG engine (graph building, cycle detection, advance/executor logic) — no Kubernetes dependency. |
+| `internal/deploybuilder` | `builder_test.go` | `Build` (chain-owned) and `BuildFromOverride` (run-owned) construction of apps/v1 Deployment + Service + Ingress from `WeaveServiceTemplate`/`WeaveRunStepOverride` + `indexclient` metadata. |
+| `internal/jobbuilder` | `builder_test.go` | `WeaveJobTemplate` + `WeaveChainStep` + `WeaveRun` → batch/v1 Job spec translation. |
+| `internal/indexclient` | `client_test.go`, `fetch_test.go` | `parseMetadata` (YAML→struct) and `FetchAppMetadataAndVersion`/`FetchAppMetadata`/`ResolveTag` HTTP calls against a fusion-index stand-in. |
+| `internal/backup` | `dump_test.go`, `restore_test.go` | `DumpObjects`/`RestoreObjects`/`HasExistingObjects` against an in-memory fake Kubernetes client — see below, this is the reference pattern for any future controller-adjacent unit test. |
+
+**Packages with no unit tests today** — their only verification is the
+minikube e2e playbook in sections 1+ below: `internal/controller` (all 5
+reconcilers, including the WeaveRun execution engine), `internal/trigger`
+(`CronScheduler`, `BatchCronScheduler`, `KafkaConsumer`, `webhook.go`,
+`s3event.go`), `internal/codesource` (shared `WEAVE_*` env var / writable-path
+volume-naming helpers used by both the chain controller and `cmd/loader`),
+`internal/apiserver` (+ `auth`, `handlers`, `middleware`), `internal/monitoring`
+(+ `cache`, `handlers`, `logsink`), `internal/security`, `cmd/loader`,
+`cmd/backup`, `cmd/api`. If you add meaningful logic to any of these, prefer
+adding a real unit test over extending only the manual playbook — e.g.
+`internal/codesource`'s path-sanitization and env-var helpers are pure
+functions and don't need a cluster; `internal/trigger`'s scheduler goroutines
+could be tested with a fake fire-channel consumer the way `BatchCronScheduler`
+already isolates schedule parsing from the min-heap goroutine.
+
+### Conventions (see also the "## Testing" section of `CLAUDE.md`)
+
+- **Package naming**: tests of unexported functions use `package <pkg>` (same
+  package — e.g. `internal/backup`, and `internal/indexclient/client_test.go`
+  for `parseMetadata`); tests that only exercise exported functions use
+  `package <pkg>_test` (e.g. `internal/dag`, `internal/deploybuilder`,
+  `internal/jobbuilder`). Match whatever the existing test file in that
+  package already uses — don't mix both styles in one package.
+- **Fake client pattern** (`internal/backup/*_test.go`) — the reference
+  pattern for unit-testing anything that takes a `client.Client` without a
+  real cluster:
+
+  ```go
+  scheme := runtime.NewScheme()
+  clientgoscheme.AddToScheme(scheme)   // k8s core types
+  weavev1alpha1.AddToScheme(scheme)    // WeaveJobTemplate, WeaveChain, ...
+  c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(jt, chain).Build()
+  ```
+
+  `sigs.k8s.io/controller-runtime/pkg/client/fake` gives an in-memory
+  `client.Client`. Register both `clientgoscheme` and `weavev1alpha1` on the
+  scheme (`internal/backup/dump_test.go`'s `testScheme(t)` /
+  `seededClient(t)` helpers are a ready-made template — copy them into a new
+  package rather than reinventing). `internal/backup` never touches
+  `WeaveRun` or any `.status` subresource, so the fake client's lack of a
+  real status subresource split hasn't mattered yet; a reconciler test would
+  need to account for that.
+- **HTTP layer pattern** (`internal/indexclient/fetch_test.go`) — spin up
+  `httptest.NewServer` over a Go 1.22+ `http.NewServeMux()` with
+  method-qualified routes and path wildcards, mirroring the real fusion-index
+  API shape:
+
+  ```go
+  mux := http.NewServeMux()
+  mux.HandleFunc("GET /api/v1/artifacts", ...)
+  mux.HandleFunc("GET /api/v1/artifacts/{id}/versions", ...)
+  ts := httptest.NewServer(mux)
+  ```
+
+  Used for both `FetchAppMetadataAndVersion` happy-path and error-path tests
+  (404s, malformed YAML, tag not found). The same pattern is the natural fit
+  for any future `apiserver`/`monitoring` HTTP handler test.
+- **`sigs.k8s.io/yaml` v1.4.0 gotcha**: a quoted numeric YAML string (e.g.
+  `port: "8080"`) fails to parse into an `int32` field — YAML string → JSON
+  string → `encoding/json` cannot unmarshal a string into a number. Unknown
+  fields are silently ignored, not rejected. `internal/indexclient` and
+  `internal/backup` both round-trip through this package; keep this in mind
+  when hand-writing YAML fixtures in tests.
 
 ---
 
@@ -305,6 +393,52 @@ curl -s -X DELETE $API/api/v1/servicetemplates/test-nginx $H
 # Expected: 200 OK
 ```
 
+### codeSource smoke test (code-loader init container)
+
+`spec.codeSource` injects a `code-loader` init container that resolves a
+fusion-index artifact tag, downloads its files as-is into `codeSource.mountPath`
+(default `/weave-code`), and writes a `.version` file. Requires a reachable
+fusion-index with a published artifact (see `../fusion-testcases/testcases_v2/README.md`
+for how to publish one, or enable a Tier 2 showroom app —
+`showroom.codeSourceApps.*` in `deployment/fusion-weave/values.yaml`).
+
+```bash
+curl -s -X POST $API/api/v1/servicetemplates \
+  -H "Content-Type: application/json" $H \
+  -d '{
+    "apiVersion": "weave.fusion-platform.io/v1alpha1",
+    "kind": "WeaveServiceTemplate",
+    "metadata": {"name": "test-codesource", "namespace": "fusion"},
+    "spec": {
+      "image": "fusion-weave-operator:latest",
+      "replicas": 1,
+      "ports": [{"name": "http", "port": 8080, "targetPort": 8080}],
+      "codeSource": {
+        "artifactName": "myapp",
+        "tag": "stable",
+        "loaderImage": "fusion-weave-operator:latest"
+      },
+      "resources": {"requests":{"cpu":"50m","memory":"32Mi"},"limits":{"cpu":"200m","memory":"128Mi"}},
+      "serviceType": "ClusterIP"
+    }
+  }' | python3 -c "
+import sys, json; t = json.load(sys.stdin)
+print('created:', t['metadata']['name'], '  valid:', t['status'].get('valid'))"
+```
+
+After the owning WeaveChain fires a run with a Deploy-kind step referencing
+this template, verify the init container ran and wrote the version file:
+
+```bash
+POD=$(kubectl get pods -n fusion -l fusion-platform.io/step=<stepName> -o jsonpath='{.items[0].metadata.name}')
+kubectl logs $POD -n fusion -c code-loader
+kubectl exec $POD -n fusion -c <containerName> -- cat /weave-code/.version
+```
+
+```bash
+curl -s -X DELETE $API/api/v1/servicetemplates/test-codesource $H
+```
+
 ---
 
 ## 7. CRUD API — WeaveChain
@@ -482,6 +616,81 @@ curl -s -X DELETE $API/api/v1/triggers/test-cron $H
 curl -s -X DELETE $API/api/v1/triggers/test-ondemand $H
 ```
 
+### BatchCron trigger (internal/trigger BatchCronScheduler)
+
+Fires individual jobs read from a YAML job list in a ConfigMap (key
+`jobs.yaml`), each entry carrying its own 5-field standard cron schedule (no
+seconds field — different from the 6-field seconds-first `spec.schedule` used
+by `Cron` triggers above, don't copy one format into the other). The showroom
+ships a ready fixture (`trigger-batchcron.yaml`, gated by
+`showroom.chains.triggerBatchCron`) if you'd rather enable that than hand-roll
+a ConfigMap.
+
+```bash
+kubectl create configmap test-batchcron-jobs -n fusion --from-literal=jobs.yaml='
+- name: hello
+  schedule: "*/5 * * * *"
+  chainRef: deploy-demo
+'
+
+curl -s -X POST $API/api/v1/triggers \
+  -H "Content-Type: application/json" $H \
+  -d '{
+    "apiVersion": "weave.fusion-platform.io/v1alpha1",
+    "kind": "WeaveTrigger",
+    "metadata": {"name": "test-batchcron", "namespace": "fusion"},
+    "spec": {
+      "chainRef": {"name": "deploy-demo"},
+      "type": "BatchCron",
+      "batchCron": {"jobsConfigMapRef": {"name": "test-batchcron-jobs"}}
+    }
+  }' | python3 -c "
+import sys, json; t = json.load(sys.stdin)
+print('trigger:', t['metadata']['name'], '  type:', t['spec']['type'])"
+
+# status.batchJobCount / batchJobErrors reflect how many entries parsed
+kubectl get weavetrigger test-batchcron -n fusion \
+  -o jsonpath='{.status.batchJobCount} valid, {.status.batchJobErrors} errors{"\n"}'
+
+curl -s -X DELETE $API/api/v1/triggers/test-batchcron $H
+kubectl delete configmap test-batchcron-jobs -n fusion
+```
+
+### Kafka trigger (internal/trigger KafkaConsumer)
+
+Requires a reachable Kafka broker — point at a local Redpanda instance (see
+`deployment/local-dev/redpanda-values.yaml`, bootstrap address
+`redpanda-0.redpanda.redpanda.svc.cluster.local:9093`) or enable
+`showroom.chains.triggerKafka` (defaults to `false` precisely because it needs
+a real broker) with `showroom.kafka.brokers`/`topic` pointed at it.
+
+```bash
+curl -s -X POST $API/api/v1/triggers \
+  -H "Content-Type: application/json" $H \
+  -d '{
+    "apiVersion": "weave.fusion-platform.io/v1alpha1",
+    "kind": "WeaveTrigger",
+    "metadata": {"name": "test-kafka", "namespace": "fusion"},
+    "spec": {
+      "chainRef": {"name": "deploy-demo"},
+      "type": "Kafka",
+      "kafka": {
+        "brokers": ["redpanda-0.redpanda.redpanda.svc.cluster.local:9093"],
+        "topic": "s3-events",
+        "consumerGroup": "fusion-weave-test"
+      }
+    }
+  }' | python3 -c "
+import sys, json; t = json.load(sys.stdin)
+print('trigger:', t['metadata']['name'], '  type:', t['spec']['type'])"
+
+# Publish a test S3-event-shaped message to the topic, then confirm a run appears
+kubectl get weaveruns -n fusion --sort-by=.metadata.creationTimestamp \
+  -o jsonpath='{.items[-1].metadata.name} {.items[-1].spec.triggerRef.name}{"\n"}'
+
+curl -s -X DELETE $API/api/v1/triggers/test-kafka $H
+```
+
 ---
 
 ## 9. CRUD API — WeaveRun (manual)
@@ -506,6 +715,41 @@ curl -s -X POST $API/api/v1/runs \
 import sys, json; r = json.load(sys.stdin)
 print('run:', r['metadata']['name'], '  phase:', r['status'].get('phase', 'Pending'))"
 # Expected: run: manual-test-run   phase: Pending (or Running)
+```
+
+### Create a run with stepOverrides (run-owned deploy step)
+
+`spec.stepOverrides` makes a Deploy-kind step run-owned instead of
+chain-owned: the operator reads runner config from the fusion-index
+artifact's `metadata.yaml` instead of the `WeaveServiceTemplate`, and names
+the Deployment `<runName>-<stepName>` so multiple runs on the same chain
+don't collide. The target chain must already have a Deploy-kind step named
+`stepName` referencing a `WeaveServiceTemplate`.
+
+```bash
+curl -s -X POST $API/api/v1/runs \
+  -H "Content-Type: application/json" $H \
+  -d '{
+    "apiVersion": "weave.fusion-platform.io/v1alpha1",
+    "kind": "WeaveRun",
+    "metadata": {"name": "override-test-run", "namespace": "fusion"},
+    "spec": {
+      "chainRef": {"name": "deploy-demo"},
+      "stepOverrides": [
+        {"stepName": "deploy", "artifactName": "myapp", "tag": "stable", "ingressName": "myapp-override"}
+      ]
+    }
+  }' | python3 -c "
+import sys, json; r = json.load(sys.stdin)
+print('run:', r['metadata']['name'], '  phase:', r['status'].get('phase', 'Pending'))"
+
+# Confirm the run-owned Deployment (not the chain-owned one) came up
+kubectl get deployment override-test-run-deploy -n fusion \
+  -o jsonpath='{.status.availableReplicas}/{.spec.replicas} available{"\n"}'
+
+# Deleting the run tears down the override Deployment/Service/Ingress
+# (the deploy-cleanup finalizer) — the chain-owned Deployment is untouched.
+curl -s -X DELETE $API/api/v1/runs/override-test-run $H
 ```
 
 ### Poll until terminal via CRUD API
@@ -1077,11 +1321,12 @@ import sys, json; print('deployments:', json.load(sys.stdin))"
 kill $PF_PID 2>/dev/null
 
 # Remove test resources created during this session
-kubectl delete weaverun manual-test-run -n fusion 2>/dev/null || true
-kubectl delete weavetrigger test-cron test-ondemand -n fusion 2>/dev/null || true
+kubectl delete weaverun manual-test-run override-test-run -n fusion 2>/dev/null || true
+kubectl delete weavetrigger test-cron test-ondemand test-batchcron test-kafka -n fusion 2>/dev/null || true
 kubectl delete weavechain test-chain -n fusion 2>/dev/null || true
 kubectl delete weavejobtemplate test-echo test-producer test-consumer auth-test -n fusion 2>/dev/null || true
-kubectl delete weaveservicetemplate test-nginx -n fusion 2>/dev/null || true
+kubectl delete weaveservicetemplate test-nginx test-codesource -n fusion 2>/dev/null || true
+kubectl delete configmap test-batchcron-jobs -n fusion 2>/dev/null || true
 
 # Verify only pre-installed resources remain
 kubectl get weavejobtemplate,weaveservicetemplate,weavechain,weavetrigger,weaverun -n fusion

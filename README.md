@@ -2,44 +2,55 @@
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-A Kubernetes operator that schedules configurable job DAGs. Define reusable job templates, compose them into dependency chains, and fire runs on-demand, on a cron schedule, or via HTTP webhook.
+A Kubernetes operator that schedules configurable job DAGs. Define reusable job and service templates, compose them into dependency chains, and fire runs on-demand, on a cron schedule, from a batch job list, via HTTP webhook, or from Kafka/S3 events.
 
 ## Features
 
-- **WeaveJobTemplate** — reusable batch job spec (image, command, resources, probes)
-- **WeaveServiceTemplate** — reusable long-running deployment spec (rolling-update steps)
-- **WeaveChain** — DAG of steps with dependency edges, shared storage, and step output passing
-- **WeaveTrigger** — fires runs on a cron schedule, on-demand annotation, or HTTP webhook
-- **WeaveRun** — execution record tracking per-step status, output capture, and phase
+- **WeaveJobTemplate** — reusable batch job spec (image, command, resources, probes, security contexts, code-source artifact loading)
+- **WeaveServiceTemplate** — reusable long-running deployment spec (rolling-update steps, Ingress, code-source artifact loading)
+- **WeaveChain** — DAG of steps with dependency edges, shared storage, step output passing, and an optional shared auth secret injected into every step
+- **WeaveTrigger** — fires runs on a cron schedule, on-demand annotation, HTTP webhook, a BatchCron job list (per-job schedules from a ConfigMap), or Kafka/S3-event messages
+- **WeaveRun** — execution record tracking per-step status, output capture, phase, and optional per-run deploy-step overrides (`stepOverrides`)
+- **Code-source artifact loading** — Job and Deploy steps can pull a versioned artifact from fusion-index at pod start via an init container, with polling-based rolling restarts on tag moves
+- **Per-run service instances** — `WeaveRun.spec.stepOverrides` lets multiple runs of one WeaveChain each get their own Deployment for a deploy-kind step, without cloning the chain
 - **REST API** — full CRUD over all five CRDs via a standalone HTTP service with API key, OIDC, and SA token authentication
 - **Monitoring API** — read-only observability endpoints at `/monitor/v1/` for run status, batch jobs, pod logs, deployment health, aggregated stats, and Kubernetes Events; backed by an in-memory TTL cache
 - **Prometheus metrics** — operator and API server metrics on a dedicated port (`:9091`), including per-phase run gauges and cache hit/miss counters
 - **Log streaming sink** — pluggable log sink interface with a Kafka implementation; log snapshots are published asynchronously after each fetch
+- **Backup/restore** — a daily CronJob (`cmd/backup`) dumps WeaveJobTemplate/WeaveServiceTemplate/WeaveChain/WeaveTrigger specs to S3 for disaster recovery; restore is manual-only
+- **Helm-configurable security contexts** — cluster-wide pod/container `SecurityContext` defaults for every workload pod, overridable per WeaveJobTemplate/WeaveServiceTemplate
+- **Showroom** — an optional, self-contained set of example WeaveChains covering most features, deployable with a single Helm flag
 
 ## Architecture
 
 ```
 cmd/main.go          — operator entry point (controller-runtime manager)
-cmd/api/main.go      — REST API server entry point (chi router)
+cmd/api/main.go       — REST API server entry point (chi router)
+cmd/backup/main.go    — backup/restore binary (dump/restore CRD specs to/from S3)
+cmd/loader/main.go    — init container entry point for code-source artifact loading
 
-api/v1alpha1/        — CRD type definitions and deepcopy
+api/v1alpha1/         — CRD type definitions and deepcopy
 internal/
-  controller/        — 5 reconcilers (one per CRD)
-  dag/               — pure-Go DAG engine (no k8s dependency)
-  jobbuilder/        — translates WeaveJobTemplate → batch/v1 Job
-  deploybuilder/     — translates WeaveServiceTemplate → apps/v1 Deployment + Service + Ingress
-  trigger/           — cron scheduler and webhook HTTP server
-  apiserver/         — REST API (router, auth, middleware, handlers)
-  monitoring/        — monitoring API (cache, logsink, handlers, Prometheus metrics server)
+  controller/         — 5 reconcilers (one per CRD)
+  dag/                — pure-Go DAG engine (no k8s dependency)
+  jobbuilder/         — translates WeaveJobTemplate + WeaveChainStep + WeaveRun → batch/v1 Job
+  deploybuilder/      — translates WeaveServiceTemplate (or a WeaveRun stepOverride) → apps/v1 Deployment + Service + Ingress
+  codesource/         — fusion-index artifact resolution + name-truncation helpers shared by jobbuilder/deploybuilder
+  trigger/            — cron scheduler, BatchCron scheduler, Kafka consumer, webhook HTTP server
+  security/           — parses WORKLOAD_SECURITY_DEFAULTS into pod/container SecurityContext defaults
+  backup/             — S3 backup/restore of CRD specs (pure Go, unit-tested via the controller-runtime fake client)
+  apiserver/          — REST API (router, auth, middleware, handlers)
+  monitoring/         — monitoring API (cache, logsink, handlers, Prometheus metrics server)
+  indexclient/        — minimal HTTP client for fusion-index tag/version resolution
 
 config/
-  crd/bases/         — generated CRD manifests
-  rbac/              — ServiceAccount, Role, RoleBinding for operator and API server
-  manager/           — raw-YAML Deployment manifests for quick iteration
-  samples/           — example CRD instances
+  crd/bases/          — generated CRD manifests
+  rbac/                — ServiceAccount, Role, RoleBinding for operator and API server
+  manager/             — raw-YAML Deployment manifests for quick iteration
+  samples/             — example CRD instances
 
 deployment/
-  fusion-weave/      — Helm chart
+  fusion-weave/        — Helm chart (includes the showroom/ demo bundle)
 ```
 
 ## Prerequisites
@@ -57,7 +68,7 @@ deployment/
 minikube start
 eval $(minikube docker-env)
 
-# Build the image (produces both /manager and /api-server binaries)
+# Build the image (produces /manager, /api-server, /loader, and /backup binaries)
 docker build -t fusion-weave-operator:latest .
 
 # Create namespace
@@ -83,6 +94,15 @@ helm upgrade --install fusion-weave deployment/fusion-weave/ \
   --set image.pullPolicy=Never \
   --set namespace=fusion \
   --set namespaceCreate=false
+```
+
+To install the self-contained demo tour alongside it:
+
+```bash
+helm upgrade --install fusion-weave deployment/fusion-weave/ \
+  ... \
+  --set showroom.enabled=true \
+  --set showroom.sharedStorage.storageClassName=csi-hostpath-sc
 ```
 
 See [deployment/fusion-weave/README.md](deployment/fusion-weave/README.md) for all available values.
@@ -181,6 +201,29 @@ kubectl annotate secret my-api-key fusion-platform.io/role=editor -n fusion
 curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/chains
 ```
 
+## Triggers
+
+A WeaveTrigger fires runs of a WeaveChain. `spec.type` selects the activation mode:
+
+| Type | Fires when | Config field |
+|---|---|---|
+| `OnDemand` | `fusion-platform.io/fire=true` annotation is set | — |
+| `Cron` | a 6-field (seconds-first) cron schedule elapses | `spec.schedule` |
+| `Webhook` | an HTTP POST hits the trigger's path | `spec.webhook` |
+| `BatchCron` | any job in a ConfigMap-backed job list reaches its own 5-field cron schedule | `spec.batchCron` |
+| `Kafka` | a message (optionally S3-event-shaped) arrives on a Kafka topic | `spec.kafka` |
+
+```yaml
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveTrigger
+metadata:
+  name: nightly-etl
+spec:
+  chainRef: {name: etl-pipeline}
+  type: Cron
+  schedule: "0 0 3 * * *"   # seconds-first: 3am daily
+```
+
 ## Step Output Passing
 
 Steps opt in to producing output with `producesOutput: true`. Downstream steps declare `consumesOutputFrom: [stepA]`. The operator captures JSON stdout from the producer and injects a merged JSON file at `/weave-input/input.json` in the consumer pod.
@@ -221,6 +264,61 @@ steps:
 ```
 
 The Deployment is owned by the WeaveChain (not the WeaveRun), so it persists across run deletions. The chain controller monitors health and auto-rollbacks after `spec.unhealthyDuration`.
+
+If the WeaveServiceTemplate sets `spec.ingress`, each ingress rule's `name` is a DNS label only (never a full hostname) — the operator appends the cluster-wide `ingress.hostSuffix` Helm value to form the actual host: `<name>.<hostSuffix>`. This keeps a chain from ever pointing an Ingress at a domain the operator doesn't own. A template with `spec.ingress` set stays `status.valid=false` until `ingress.hostSuffix` is configured.
+
+## Code-Source Artifacts
+
+A WeaveJobTemplate or WeaveServiceTemplate can set `spec.codeSource` to pull a versioned artifact from [fusion-index](../fusion-index) into the pod at start via an init container — no baked-in application code required in the runner image.
+
+```yaml
+spec:
+  codeSource:
+    artifactName: "org.myteam.myapp"
+    tag: "stable"          # mutable tag, resolved to a concrete version on every pod start
+    mountPath: "/weave-code"
+```
+
+For Deploy steps, the chain controller polls fusion-index every `codeSource.pollInterval` (default `60s`) and rolling-restarts the Deployment when the tracked tag moves to a new version — or trigger it immediately with:
+
+```bash
+kubectl annotate weavechains <chain-name> \
+  fusion-platform.io/reload-deploy-step=<stepName>@<version> --overwrite -n fusion
+```
+
+## Per-Run Service Instances (stepOverrides)
+
+By default a deploy-kind step's Deployment is chain-owned and shared across every run. `WeaveRun.spec.stepOverrides` lets an individual run stand up its own instance instead — named `<runName>-<stepName>` and owned by the WeaveRun — reading runner configuration from the artifact's `metadata.yaml` in fusion-index rather than from the WeaveServiceTemplate:
+
+```yaml
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveRun
+spec:
+  chainRef: {name: my-chain}
+  stepOverrides:
+    - stepName: api
+      artifactName: "org.myteam.myapp"
+      tag: "pr-123"
+      ingressName: "pr-123-api"   # DNS label; full host is <ingressName>.<ingress.hostSuffix>
+```
+
+## Backup and Restore
+
+The `backup` binary (`cmd/backup`) dumps WeaveJobTemplate/WeaveServiceTemplate/WeaveChain/WeaveTrigger *specs* to S3 — never WeaveRun, never `.status`. A daily CronJob is templated in the Helm chart, gated by `backup.enabled`:
+
+```bash
+helm upgrade --install fusion-weave deployment/fusion-weave/ \
+  ... \
+  --set backup.enabled=true \
+  --set backup.s3.bucket=my-backup-bucket
+```
+
+Restore is manual-only (not wired to any automatic Helm trigger) and refuses to run unless forced:
+
+```bash
+kubectl run fusion-weave-restore --rm -it --image=fusion-weave-operator:latest \
+  --restart=Never -n fusion -- /backup restore
+```
 
 ## Development
 

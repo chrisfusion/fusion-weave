@@ -69,7 +69,7 @@ helm uninstall fusion-weave
 | Key | Default | Description |
 |---|---|---|
 | `image.repository` | `ghcr.io/chrisfusion/fusion-weave-operator` | Container image repository for the operator. Both `/manager` and `/api-server` binaries are in this image. |
-| `image.tag` | `latest` | Image tag. |
+| `image.tag` | `0.2.1` | Image tag. |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy. Use `Never` for local minikube builds. |
 
 ### Operator deployment
@@ -83,6 +83,19 @@ helm uninstall fusion-weave
 | `resources.requests.memory` | `64Mi` | Memory request for the operator pod. |
 | `resources.limits.cpu` | `500m` | CPU limit for the operator pod. |
 | `resources.limits.memory` | `128Mi` | Memory limit for the operator pod. |
+
+### Operator pod metadata & security
+
+| Key | Default | Description |
+|---|---|---|
+| `podAnnotations` | `{}` | Extra annotations added to the operator pod template. Useful for tooling (e.g. Datadog APM, Vault agent) or custom admission webhooks. |
+| `podLabels` | `{}` | Extra labels added to the operator pod template. Useful for NetworkPolicies, PodDisruptionBudgets, or tag-based monitoring. |
+| `podSecurityContext.runAsNonRoot` | `true` | Pod-level security context for the operator pod. Any `corev1.PodSecurityContext` field can be set. |
+| `podSecurityContext.runAsUser` | `65532` | |
+| `podSecurityContext.fsGroup` | `65532` | |
+| `containerSecurityContext.allowPrivilegeEscalation` | `false` | Container-level security context for the operator container. Any `corev1.SecurityContext` field can be set. |
+| `containerSecurityContext.capabilities.drop` | `["ALL"]` | |
+| `containerSecurityContext.readOnlyRootFilesystem` | `true` | |
 
 ### Operator ports
 
@@ -116,10 +129,20 @@ helm uninstall fusion-weave
 | `api.resources.limits.memory` | `128Mi` | Memory limit for the API server pod. |
 | `api.service.type` | `ClusterIP` | API server Service type. |
 | `api.service.port` | `8082` | API server Service port. |
+| `api.podAnnotations` | `{}` | Extra annotations added to the API server pod template. |
+| `api.podLabels` | `{}` | Extra labels added to the API server pod template. |
+| `api.podSecurityContext.runAsNonRoot` | `true` | Pod-level security context for the API server pod. Any `corev1.PodSecurityContext` field can be set. |
+| `api.podSecurityContext.runAsUser` | `65532` | |
+| `api.podSecurityContext.fsGroup` | `65532` | |
+| `api.containerSecurityContext.allowPrivilegeEscalation` | `false` | Container-level security context for the API server container. Any `corev1.SecurityContext` field can be set. |
+| `api.containerSecurityContext.capabilities.drop` | `["ALL"]` | |
+| `api.containerSecurityContext.readOnlyRootFilesystem` | `true` | |
+| `api.log.level` | `info` | Minimum log level for the API HTTP layer (`log/slog`): `debug`\|`info`\|`warn`\|`error`. |
+| `api.log.format` | `json` | Log output format: `json`\|`text`. `json` is the default for Kubernetes log collectors. |
 
 ### REST API authentication
 
-All auth modes are disabled by default. Enable one or more as needed. Unauthenticated requests receive `401` when any auth mode is active.
+`saAuthEnabled` is enabled by default; all other auth modes are disabled by default. Enable additional modes as needed. Unauthenticated requests receive `401` when any auth mode is active.
 
 | Key | Default | Description |
 |---|---|---|
@@ -128,7 +151,7 @@ All auth modes are disabled by default. Enable one or more as needed. Unauthenti
 | `api.auth.oidcIssuerURL` | `""` | OIDC provider issuer URL (e.g. `https://accounts.google.com`). Required when `oidcEnabled=true`. |
 | `api.auth.oidcClientID` | `""` | Expected JWT audience / client ID. Required when `oidcEnabled=true`. |
 | `api.auth.oidcRoleClaim` | `fusion-weave-role` | JWT claim name carrying the role (`viewer`/`editor`/`admin`). |
-| `api.auth.saAuthEnabled` | `false` | Enable Kubernetes ServiceAccount token auth via TokenReview API. Also creates a ClusterRole + ClusterRoleBinding for `authentication.k8s.io/tokenreviews`. Role is read from SA label `fusion-platform.io/role` (defaults to `viewer`). |
+| `api.auth.saAuthEnabled` | `true` | Enable Kubernetes ServiceAccount token auth via TokenReview API. Also creates a ClusterRole + ClusterRoleBinding for `authentication.k8s.io/tokenreviews`. Role is read from SA label `fusion-platform.io/role` (defaults to `viewer`). |
 | `api.auth.allowUnauthenticated` | `false` | Disable all auth checks — every caller receives `admin` access. Intended for cluster-internal mode only. **Never enable in production.** |
 
 ### Roles
@@ -159,6 +182,70 @@ helm upgrade fusion-weave deployment/fusion-weave/ \
   --set api.monitoring.metricsPort=9091 \
   --set api.auth.apiKeyEnabled=true
 ```
+
+### Workload pod security defaults
+
+Applied to every pod the operator creates at runtime — both batch Job pods (job steps)
+and Deployment pods (deploy steps). Separate from the operator/API server pod
+configuration above. Serialized to JSON and passed to the operator via the
+`WORKLOAD_SECURITY_DEFAULTS` env var; a WeaveJobTemplate/WeaveServiceTemplate can
+override `podSecurityContext`/`containerSecurityContext` per-template.
+
+| Key | Default | Description |
+|---|---|---|
+| `workload.security.podAnnotations` | `{}` | Extra annotations merged into every workload pod template. Use for Seccomp/AppArmor annotations, Istio injection, Datadog APM, etc. |
+| `workload.security.podLabels` | `{}` | Extra labels merged into every workload pod template. Use for NetworkPolicies, PodDisruptionBudgets, monitoring tag selectors. |
+| `workload.security.podSecurityContext.runAsNonRoot` | `true` | Pod-level security context for every workload pod. Any `corev1.PodSecurityContext` field can be set (e.g. `seccompProfile`, `runAsUser`). |
+| `workload.security.podSecurityContext.runAsUser` | `65532` | |
+| `workload.security.podSecurityContext.fsGroup` | `65532` | |
+| `workload.security.podSecurityContext.seccompProfile.type` | `RuntimeDefault` | |
+| `workload.security.containerSecurityContext.allowPrivilegeEscalation` | `false` | Container-level security context applied to every workload container, including the `code-loader` init container in deploy steps. |
+| `workload.security.containerSecurityContext.capabilities.drop` | `["ALL"]` | |
+| `workload.security.containerSecurityContext.readOnlyRootFilesystem` | `true` | |
+
+### Code source (deploy steps)
+
+Controls how the chain controller resolves and polls fusion-index for `codeSource`-backed
+deploy steps (WeaveServiceTemplate `spec.codeSource`).
+
+| Key | Default | Description |
+|---|---|---|
+| `codeSource.pollInterval` | `60s` | Go duration string. How often the chain controller polls fusion-index for artifact tag changes. Maps to `CODE_SOURCE_POLL_INTERVAL`. |
+| `codeSource.indexURL` | `""` | Cluster-wide default fusion-index base URL, applied to any deploy step whose WeaveServiceTemplate does not set its own `codeSource.indexURL`. Maps to `FUSION_INDEX_URL`. Empty uses the built-in default `http://fusion-index-backend.fusion.svc.cluster.local:8080`. |
+| `codeSource.loaderImage` | `""` | Cluster-wide default init container image for code-source deploy steps, applied when a WeaveServiceTemplate does not set its own `codeSource.loaderImage`. Maps to `LOADER_IMAGE`. Empty uses the built-in default `fusion-code-loader:latest` — does not exist on minikube, so set explicitly (e.g. to the operator image, which embeds `/loader`). |
+| `codeSource.writablePaths` | `[/tmp, /home/nonroot, /weave-work]` | Paths that receive a writable `emptyDir` volume in both the `code-loader` init container and the main container, for deploy steps that have a `codeSource`. Required when `readOnlyRootFilesystem: true` (workload security default above) so runners can extract archives, install dependencies, and write cache/temp files. |
+
+### Ingress
+
+| Key | Default | Description |
+|---|---|---|
+| `ingress.hostSuffix` | `""` | Cluster-wide domain suffix appended to every ingress rule's `name` to form the full Ingress hostname: `<name>.<hostSuffix>`. Users configuring WeaveServiceTemplate/WeaveRun ingress can only supply the leftmost DNS label, never a full domain, so an Ingress can never be pointed at a hostname the operator doesn't own. Maps to `INGRESS_HOST_SUFFIX`. A WeaveServiceTemplate with `spec.ingress` set stays `status.valid=false` until this is set. |
+
+### Backup
+
+Periodic S3 backup of WeaveJobTemplate/WeaveServiceTemplate/WeaveChain/WeaveTrigger specs
+(never WeaveRun, never `.status`) via a daily CronJob — see `cmd/backup`. Restore is
+manual-only (`/backup restore`), not chart-templated.
+
+| Key | Default | Description |
+|---|---|---|
+| `backup.enabled` | `false` | Deploy the backup CronJob and its ServiceAccount/Role/RoleBinding. |
+| `backup.schedule` | `0 3 * * *` | Standard cron expression (`CronJob.spec.schedule`). |
+| `backup.successfulJobsHistoryLimit` | `3` | Number of successful backup Jobs kept. |
+| `backup.failedJobsHistoryLimit` | `1` | Number of failed backup Jobs kept. |
+| `backup.activeDeadlineSeconds` | `1800` | Maximum runtime for a single backup Job before it's killed. |
+| `backup.image.repository` | `""` | Override image repository for the backup CronJob. Empty inherits `image.repository`. |
+| `backup.image.tag` | `""` | Override image tag for the backup CronJob. Empty inherits `image.tag`. |
+| `backup.image.pullPolicy` | `""` | Override pull policy for the backup CronJob. Empty inherits `image.pullPolicy`. |
+| `backup.serviceAccount.name` | `fusion-weave-backup` | ServiceAccount name for the backup CronJob; read-only access to the 4 backed-up CRD types (never weaveruns). |
+| `backup.s3.bucket` | `""` | **Required** when `backup.enabled=true`. S3 bucket name. |
+| `backup.s3.backupPrefix` | `""` | S3 key prefix for backup objects. Empty resolves to `<kubernetes-namespace>/backups`. |
+| `backup.s3.region` | `us-east-1` | AWS region. |
+| `backup.s3.endpointOverride` | `""` | S3-compatible endpoint override, for MinIO, Ceph, or other custom endpoints. |
+| `backup.s3.credentialsType` | `static` | `static` injects `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` from a Secret (`accessKeyId`/`secretAccessKey` below, or `existingSecret`); `default` relies on the AWS SDK's default credential chain (IRSA, instance role, etc). |
+| `backup.s3.existingSecret` | `""` | Name of an existing Secret with `aws-access-key-id`/`aws-secret-access-key` keys. When set, the chart does not create `<release>-backup-s3-secret`. |
+| `backup.s3.accessKeyId` | `""` | Static AWS access key ID. Required when `credentialsType=static` and `existingSecret` is empty. |
+| `backup.s3.secretAccessKey` | `""` | Static AWS secret access key. Required when `credentialsType=static` and `existingSecret` is empty. |
 
 ### Showroom
 
@@ -240,3 +327,8 @@ curl http://localhost:8082/api/v1/runs
 | ClusterRoleBinding | `<release>-api-tokenreview` | Binds ClusterRole to SA (when `api.auth.saAuthEnabled=true`) |
 | Deployment | `<release>-api` | The REST API server (when `api.enabled=true`) |
 | Service | `<release>-api` | Exposes API port and metrics port (when `api.enabled=true`; metrics port only when `api.monitoring.enabled=true`) |
+| ServiceAccount | `fusion-weave-backup` | Backup CronJob identity (when `backup.enabled=true`) |
+| Role | `fusion-weave-backup` | Read-only on WeaveJobTemplate/WeaveServiceTemplate/WeaveChain/WeaveTrigger — never weaveruns (when `backup.enabled=true`) |
+| RoleBinding | `fusion-weave-backup` | Binds role to SA (when `backup.enabled=true`) |
+| Secret | `<release>-backup-s3-secret` | Static AWS credentials (when `backup.enabled=true`, `backup.s3.credentialsType=static`, and `backup.s3.existingSecret` is unset) |
+| CronJob | `<release>-backup` | Daily S3 backup of CRD specs (when `backup.enabled=true`) |
