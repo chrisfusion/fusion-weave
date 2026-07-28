@@ -76,3 +76,7 @@ charts/
 *.log
 tmp/
 temp/
+
+# Claude Code (local)
+.claude/
+.claude.local.md
