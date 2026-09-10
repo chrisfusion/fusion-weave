@@ -46,19 +46,26 @@ func (r *WeaveServiceTemplateReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, nil
 	}
 
-	patch := client.MergeFrom(tmpl.DeepCopy())
 	tmpl.Status.Valid = valid
 	tmpl.Status.ValidationMessage = msg
 	tmpl.Status.ObservedGeneration = tmpl.Generation
 
-	if err := r.Status().Patch(ctx, &tmpl, patch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("patch status: %w", err)
+	// Status.Valid has no +optional marker, so on a brand-new template (invalid
+	// from its very first reconcile) a MergeFrom-diffed patch that happens not to
+	// change Valid's value — its zero value (false) already equals "new" when the
+	// template is invalid — would omit the required field entirely and get
+	// rejected with "status.valid: Required value", permanently deadlocking this
+	// template's reconcile in that same error forever. Same root cause as the
+	// WeaveTrigger.Status.Active incident fixed in 2baadb2. Update() always sends
+	// the full status, so it can't hit that gap.
+	if err := r.Status().Update(ctx, &tmpl); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 
 	if valid {
-		logger.Info("WeaveServiceTemplate is valid")
+		logger.Info("WeaveServiceTemplate is valid", "template", tmpl.Name)
 	} else {
-		logger.Info("WeaveServiceTemplate is invalid", "reason", msg)
+		logger.Info("WeaveServiceTemplate is invalid", "template", tmpl.Name, "reason", msg)
 	}
 	return ctrl.Result{}, nil
 }

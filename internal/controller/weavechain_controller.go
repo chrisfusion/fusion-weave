@@ -77,9 +77,6 @@ func (r *WeaveChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Capture patch base before any mutations.
-	patch := client.MergeFrom(chain.DeepCopy())
-
 	valid, msg := r.validateChain(ctx, &chain)
 
 	validationChanged := chain.Status.Valid != valid ||
@@ -93,15 +90,23 @@ func (r *WeaveChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	requeueAfter, healthChanged := r.syncDeploymentHealth(ctx, &chain)
 
 	if validationChanged || healthChanged {
-		if err := r.Status().Patch(ctx, &chain, patch); err != nil {
-			return ctrl.Result{}, fmt.Errorf("patch status: %w", err)
+		// Status.Valid has no +optional marker, so on a brand-new chain (invalid
+		// from its very first reconcile) a MergeFrom-diffed patch that happens not
+		// to change Valid's value — its zero value (false) already equals "new"
+		// when the chain is invalid — would omit the required field entirely and
+		// get rejected with "status.valid: Required value", permanently deadlocking
+		// this chain's reconcile in that same error forever. Same root cause as the
+		// WeaveTrigger.Status.Active incident fixed in 2baadb2 (see setInactive).
+		// Update() always sends the full status, so it can't hit that gap.
+		if err := r.Status().Update(ctx, &chain); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 		}
 	}
 
 	if valid {
-		logger.Info("WeaveChain is valid")
+		logger.Info("WeaveChain is valid", "chain", chain.Name)
 	} else {
-		logger.Info("WeaveChain is invalid", "reason", msg)
+		logger.Info("WeaveChain is invalid", "chain", chain.Name, "reason", msg)
 	}
 
 	if requeueAfter > 0 {

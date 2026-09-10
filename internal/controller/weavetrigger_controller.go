@@ -340,10 +340,16 @@ func (r *WeaveTriggerReconciler) syncActivationSources(ctx context.Context, ft *
 			return nil
 		}
 		r.WebhookServer.Register(ft.Spec.Webhook.Path, ft.Namespace, ft.Name)
-		// Inform status of the webhook URL (informational).
-		patch := client.MergeFrom(ft.DeepCopy())
+		// Inform status of the webhook URL (informational). Status.Active has no
+		// +optional marker, so a MergeFrom patch that happens not to change its
+		// value (e.g. the very first status write for a brand-new trigger, where
+		// Active's zero value already equals the "new" value) would omit it from
+		// the patch and get rejected with "status.active: Required value" — same
+		// root cause as the BatchCron incident fixed in 2baadb2. Update() always
+		// sends the full status, so it can't hit that gap.
+		ft.Status.Active = true
 		ft.Status.WebhookURL = fmt.Sprintf("http://<operator-svc>%s", ft.Spec.Webhook.Path)
-		return r.Status().Patch(ctx, ft, patch)
+		return r.Status().Update(ctx, ft)
 
 	case weavev1alpha1.TriggerBatchCron:
 		return r.syncBatchCronSource(ctx, ft, key)
@@ -605,11 +611,19 @@ func (r *WeaveTriggerReconciler) createRun(
 	return r.Status().Patch(ctx, ft, patch)
 }
 
+// setInactive is commonly the very first status write for a brand-new trigger
+// (e.g. its chain does not exist yet or is invalid from the start) — so it must not
+// rely on a MergeFrom diff to carry Active into the patch: Active's "new" value
+// (false) equals its Go zero value, so a diff against a never-before-written status
+// sees no change and omits the field entirely, and the resulting write is rejected
+// with "status.active: Required value" (Active has no +optional marker) — the
+// trigger then never leaves this failing reconcile, deadlocked exactly like the
+// BatchCron incident fixed in 2baadb2, just via chain-not-found instead of a panic.
+// Update() always sends the full status, so it can't hit that gap.
 func (r *WeaveTriggerReconciler) setInactive(ctx context.Context, ft *weavev1alpha1.WeaveTrigger, msg string) (ctrl.Result, error) {
-	patch := client.MergeFrom(ft.DeepCopy())
 	ft.Status.Active = false
 	ft.Status.InactiveReason = msg
-	if err := r.Status().Patch(ctx, ft, patch); err != nil {
+	if err := r.Status().Update(ctx, ft); err != nil {
 		return ctrl.Result{}, err
 	}
 	log.FromContext(ctx).Info("WeaveTrigger inactive", "trigger", ft.Name, "chain", ft.Spec.ChainRef.Name, "reason", msg)
@@ -624,15 +638,22 @@ func (r *WeaveTriggerReconciler) setInactive(ctx context.Context, ft *weavev1alp
 // Clearing it requires the fusion-platform.io/reset annotation — deliberately no
 // auto-retry, since a panic reflects a defect rather than a transient condition
 // like chain-not-found (which already self-heals via setInactive).
+//
+// Uses Update() rather than a MergeFrom patch for the same reason as setInactive:
+// Active's new value (false) can equal its already-unwritten zero value, so a diff
+// could omit the required field from the patch and get rejected. Quarantine should
+// be rare on a trigger's very first-ever status write (its activation source has
+// usually ticked successfully at least once before a real defect panics), but there
+// is no way to guarantee that, so this avoids the gap entirely rather than relying
+// on it being unlikely.
 func (r *WeaveTriggerReconciler) quarantine(ctx context.Context, ft *weavev1alpha1.WeaveTrigger, p trigger.TriggerPanic) (ctrl.Result, error) {
-	patch := client.MergeFrom(ft.DeepCopy())
 	now := metav1.Now()
 	ft.Status.Active = false
 	ft.Status.Quarantined = true
 	ft.Status.QuarantineReason = fmt.Sprintf("%s: %s", p.Source, p.Reason)
 	ft.Status.QuarantinedAt = &now
-	if err := r.Status().Patch(ctx, ft, patch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("patch quarantine status: %w", err)
+	if err := r.Status().Update(ctx, ft); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update quarantine status: %w", err)
 	}
 	log.FromContext(ctx).Error(fmt.Errorf("%s", p.Reason), "WeaveTrigger quarantined after panic",
 		"trigger", ft.Name, "chain", ft.Spec.ChainRef.Name, "source", p.Source)
