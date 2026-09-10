@@ -475,7 +475,7 @@ func (r *WeaveChainReconciler) rollbackDeployment(
 
 func (r *WeaveChainReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Watch WeaveJobTemplate changes and enqueue any WeaveChain that references them.
-	enqueueByJobTemplate := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+	enqueueByJobTemplate := handler.EnqueueRequestsFromMapFunc(safeMapFunc("chain/jobTemplate", func(ctx context.Context, obj client.Object) []reconcile.Request {
 		tmpl, ok := obj.(*weavev1alpha1.WeaveJobTemplate)
 		if !ok {
 			return nil
@@ -499,10 +499,10 @@ func (r *WeaveChainReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 		}
 		return reqs
-	})
+	}))
 
 	// Watch WeaveServiceTemplate changes and enqueue any WeaveChain that references them.
-	enqueueByServiceTemplate := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+	enqueueByServiceTemplate := handler.EnqueueRequestsFromMapFunc(safeMapFunc("chain/serviceTemplate", func(ctx context.Context, obj client.Object) []reconcile.Request {
 		tmpl, ok := obj.(*weavev1alpha1.WeaveServiceTemplate)
 		if !ok {
 			return nil
@@ -526,10 +526,10 @@ func (r *WeaveChainReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 		}
 		return reqs
-	})
+	}))
 
 	// Watch Deployment changes and enqueue the owning WeaveChain by label.
-	enqueueByDeployment := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+	enqueueByDeployment := handler.EnqueueRequestsFromMapFunc(safeMapFunc("chain/deployment", func(ctx context.Context, obj client.Object) []reconcile.Request {
 		chainName := obj.GetLabels()[deploybuilder.ChainLabel]
 		if chainName == "" {
 			return nil
@@ -540,7 +540,7 @@ func (r *WeaveChainReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				Name:      chainName,
 			},
 		}}
-	})
+	}))
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&weavev1alpha1.WeaveChain{}).

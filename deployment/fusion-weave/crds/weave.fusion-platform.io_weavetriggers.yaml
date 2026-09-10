@@ -26,6 +26,9 @@ spec:
     - jsonPath: .status.active
       name: Active
       type: boolean
+    - jsonPath: .status.quarantined
+      name: Quarantined
+      type: boolean
     - jsonPath: .status.lastRunName
       name: LastRun
       type: string
@@ -355,6 +358,13 @@ spec:
                 description: BatchJobErrors is the number of job entries that failed
                   validation (BatchCron only).
                 type: integer
+              inactiveReason:
+                description: |-
+                  InactiveReason explains why Active is false (e.g. chain not found or invalid).
+                  Empty when Active is true. Distinct from QuarantineReason: this reflects an
+                  ordinary, self-healing condition on the referenced chain, not a system-recovered
+                  panic.
+                type: string
               lastRunName:
                 description: LastRunName is the name of the most recently created
                   WeaveRun.
@@ -369,6 +379,21 @@ spec:
                 items:
                   type: string
                 type: array
+              quarantineReason:
+                description: QuarantineReason describes the panic that caused quarantine.
+                type: string
+              quarantined:
+                description: |-
+                  Quarantined is true when the operator auto-disabled this trigger's activation
+                  source (cron/batchCron/kafka goroutine) after recovering a panic, to stop it
+                  from repeatedly failing. Distinct from Spec.Paused, which is a user action.
+                  While true, the trigger's activation source is unregistered and will not fire.
+                  Clear it by setting the fusion-platform.io/reset annotation to "true".
+                type: boolean
+              quarantinedAt:
+                description: QuarantinedAt is when the trigger was quarantined.
+                format: date-time
+                type: string
               webhookURL:
                 description: WebhookURL is the full URL for webhook-type triggers
                   (informational).

@@ -5,6 +5,7 @@ package trigger
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -43,18 +44,31 @@ type kafkaRunner struct {
 	fireCh   chan<- KafkaFireRequest
 	cfg      KafkaRunnerConfig
 	cancel   context.CancelFunc
+	// onPanic is invoked (in this goroutine) if run() recovers a panic, before the
+	// goroutine exits. It must deregister the runner from the owning consumer and
+	// report the panic — after this, the whole trigger stops firing.
+	onPanic func(rec interface{})
 }
 
-func newKafkaRunner(ns, name string, fireCh chan<- KafkaFireRequest, cfg KafkaRunnerConfig) *kafkaRunner {
+func newKafkaRunner(ns, name string, fireCh chan<- KafkaFireRequest, cfg KafkaRunnerConfig, onPanic func(rec interface{})) *kafkaRunner {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &kafkaRunner{ns: ns, name: name, fireCh: fireCh, cfg: cfg, cancel: cancel}
+	r := &kafkaRunner{ns: ns, name: name, fireCh: fireCh, cfg: cfg, cancel: cancel, onPanic: onPanic}
 	go r.run(ctx)
 	return r
 }
 
 func (r *kafkaRunner) stop() { r.cancel() }
 
+// run consumes until ctx is cancelled or a panic is recovered. A panic here (e.g.
+// malformed message handling) ends the goroutine entirely rather than crashing the
+// operator process, since this loop runs outside controller-runtime's per-Reconcile
+// panic recovery.
 func (r *kafkaRunner) run(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil && r.onPanic != nil {
+			r.onPanic(rec)
+		}
+	}()
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        r.cfg.Brokers,
 		Topic:          r.cfg.Topic,
@@ -129,14 +143,31 @@ func buildDialer(cfg KafkaRunnerConfig) *kafka.Dialer {
 // It is safe for concurrent use.
 type KafkaConsumer struct {
 	fireCh  chan<- KafkaFireRequest
+	panicCh chan<- TriggerPanic
 	mu      sync.Mutex
 	runners map[string]*kafkaRunner
 }
 
-func NewKafkaConsumer(fireCh chan<- KafkaFireRequest) *KafkaConsumer {
+// NewKafkaConsumer creates a KafkaConsumer. A panic recovered from a trigger's
+// runner goroutine is reported on panicCh (non-blocking); that trigger's runner is
+// removed so it does not consume again until re-Upserted.
+func NewKafkaConsumer(fireCh chan<- KafkaFireRequest, panicCh chan<- TriggerPanic) *KafkaConsumer {
 	return &KafkaConsumer{
 		fireCh:  fireCh,
+		panicCh: panicCh,
 		runners: make(map[string]*kafkaRunner),
+	}
+}
+
+// reportPanic sends a non-blocking best-effort panic report; a full channel drops it
+// rather than blocking the runner goroutine that is already exiting.
+func (c *KafkaConsumer) reportPanic(ns, name string, rec interface{}) {
+	if c.panicCh == nil {
+		return
+	}
+	select {
+	case c.panicCh <- TriggerPanic{Namespace: ns, Name: name, Source: PanicSourceKafka, Reason: fmt.Sprintf("%v", rec)}:
+	default:
 	}
 }
 
@@ -148,7 +179,13 @@ func (c *KafkaConsumer) Upsert(key, ns, name string, cfg KafkaRunnerConfig) {
 	if r, ok := c.runners[key]; ok {
 		r.stop()
 	}
-	c.runners[key] = newKafkaRunner(ns, name, c.fireCh, cfg)
+	onPanic := func(rec interface{}) {
+		c.mu.Lock()
+		delete(c.runners, key)
+		c.mu.Unlock()
+		c.reportPanic(ns, name, rec)
+	}
+	c.runners[key] = newKafkaRunner(ns, name, c.fireCh, cfg, onPanic)
 }
 
 // Remove stops and removes the consumer goroutine for key.

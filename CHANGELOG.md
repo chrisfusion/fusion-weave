@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- `WeaveTriggerStatus.Quarantined`/`.QuarantineReason`/`.QuarantinedAt` — a trigger's cron/batchCron/kafka activation-source goroutine now recovers from a panic instead of crashing the whole operator process (these goroutines run outside controller-runtime's per-Reconcile panic recovery), unregisters itself so it stops firing, and reports the panic; the reconciler reflects this as `status.quarantined=true` on just that WeaveTrigger. Distinct from `spec.paused` (a user action) so a frontend can render them separately. Clear it with the one-shot `fusion-platform.io/reset` annotation — deliberately no auto-retry, since a panic reflects a defect rather than a transient condition.
+- `WeaveTriggerStatus.InactiveReason` — persists why `status.active=false` (e.g. chain not found/invalid), previously only logged.
+- `internal/controller.safeMapFunc` — every `handler.EnqueueRequestsFromMapFunc` callback across the chain/run/trigger controllers is now wrapped with panic recovery. These callbacks run in the informer's own goroutine (not inside a Reconcile call), so an unrecovered panic there crashes the whole process; recovering degrades a bad/legacy object to "this enqueue skipped and logged" instead.
+
+### Changed
+- Error messages for cross-object lookups (`get chain`, `get trigger`, deploy-teardown chain lookup) in `weaverun_controller.go` now include the referencing run's name and the referenced object's name, so a failure log line identifies which run/chain is affected without cross-referencing the reconcile request.
+
+### Fixed
+- A panic recovered from a single WeaveTrigger's cron/batchCron/kafka goroutine no longer crashlooped the entire operator (killing reconciliation for every chain and run in the namespace); it now quarantines only the offending trigger.
+
 ## [0.4.0] — 2026-07-22
 
 ### Added

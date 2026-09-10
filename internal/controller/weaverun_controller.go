@@ -255,7 +255,7 @@ func (r *WeaveRunReconciler) resolveAuthSecretName(ctx context.Context, run *wea
 		case err == nil && trigger.Spec.AuthSecretRefOverride != nil:
 			return trigger.Spec.AuthSecretRefOverride.Name, nil
 		case err != nil && !errors.IsNotFound(err):
-			return "", fmt.Errorf("get trigger: %w", err)
+			return "", fmt.Errorf("get trigger %q for run %q: %w", run.Spec.TriggerRef.Name, run.Name, err)
 		}
 	}
 
@@ -346,7 +346,7 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			_ = r.Status().Patch(ctx, &run, base)
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("get chain: %w", err)
+		return ctrl.Result{}, fmt.Errorf("get chain %q for run %q: %w", run.Spec.ChainRef.Name, run.Name, err)
 	}
 
 	// Add the deploy-cleanup finalizer as soon as we confirm the chain has deploy
@@ -1296,7 +1296,7 @@ func (r *WeaveRunReconciler) doDeployTeardown(ctx context.Context, run *weavev1a
 		Namespace: run.Namespace, Name: run.Spec.ChainRef.Name,
 	}, &chain); err != nil {
 		if !errors.IsNotFound(err) {
-			return fmt.Errorf("get chain for deploy teardown: %w", err)
+			return fmt.Errorf("get chain %q for deploy teardown of run %q: %w", run.Spec.ChainRef.Name, run.Name, err)
 		}
 		chainFound = false
 	}
@@ -1539,7 +1539,7 @@ func findStepSpec(steps []weavev1alpha1.WeaveChainStep, name string) *weavev1alp
 
 func (r *WeaveRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Enqueue the owning WeaveRun when a child batch Job changes.
-	enqueueFromJob := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+	enqueueFromJob := handler.EnqueueRequestsFromMapFunc(safeMapFunc("run/job", func(ctx context.Context, obj client.Object) []reconcile.Request {
 		for _, ref := range obj.GetOwnerReferences() {
 			if ref.Kind == "WeaveRun" {
 				return []reconcile.Request{{
@@ -1551,10 +1551,10 @@ func (r *WeaveRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 		}
 		return nil
-	})
+	}))
 
 	// Enqueue any running WeaveRun that has a deploy step referencing this Deployment.
-	enqueueFromDeployment := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+	enqueueFromDeployment := handler.EnqueueRequestsFromMapFunc(safeMapFunc("run/deployment", func(ctx context.Context, obj client.Object) []reconcile.Request {
 		deployName := obj.GetName()
 		ns := obj.GetNamespace()
 
@@ -1581,7 +1581,7 @@ func (r *WeaveRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 		}
 		return reqs
-	})
+	}))
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&weavev1alpha1.WeaveRun{}).

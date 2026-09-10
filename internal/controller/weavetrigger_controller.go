@@ -36,6 +36,10 @@ const (
 	labelChain   = "fusion-platform.io/chain"
 
 	annotationFire = "fusion-platform.io/fire"
+	// annotationReset clears Status.Quarantined (set after a recovered panic in the
+	// trigger's activation-source goroutine) and re-registers the trigger's
+	// activation source. One-shot, consumed like annotationFire.
+	annotationReset = "fusion-platform.io/reset"
 )
 
 // WeaveTriggerReconciler manages activation sources and creates WeaveRun objects.
@@ -52,6 +56,9 @@ type WeaveTriggerReconciler struct {
 	BatchFireCh <-chan trigger.BatchFireRequest
 	// KafkaFireCh receives fire requests from the KafkaConsumer.
 	KafkaFireCh <-chan trigger.KafkaFireRequest
+	// TriggerPanicCh receives reports of panics recovered by activation-source
+	// goroutines (cron/batchCron/kafka); the reported trigger is quarantined.
+	TriggerPanicCh <-chan trigger.TriggerPanic
 
 	// wakeupCh is used by cron and webhook callbacks to enqueue a reconcile.
 	wakeupCh chan event.GenericEvent
@@ -70,6 +77,12 @@ type WeaveTriggerReconciler struct {
 	// Key: "<namespace>/<name>", value: ordered list of fire requests.
 	pendingKafkaFiresMu sync.Mutex
 	pendingKafkaFires   map[string][]trigger.KafkaFireRequest
+
+	// pendingPanics holds queued panic reports awaiting quarantine. Key: "<namespace>/<name>".
+	// A key present here always wins over syncActivationSources on the next reconcile,
+	// even if a fire/wakeup event is also pending.
+	pendingPanicsMu sync.Mutex
+	pendingPanics   map[string]trigger.TriggerPanic
 }
 
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=fluxtriggers,verbs=get;list;watch;create;update;patch;delete
@@ -87,6 +100,7 @@ func NewWeaveTriggerReconciler(
 	fireCh <-chan trigger.FireRequest,
 	batchFireCh <-chan trigger.BatchFireRequest,
 	kafkaFireCh <-chan trigger.KafkaFireRequest,
+	panicCh <-chan trigger.TriggerPanic,
 ) *WeaveTriggerReconciler {
 	r := &WeaveTriggerReconciler{
 		Client:             c,
@@ -98,14 +112,17 @@ func NewWeaveTriggerReconciler(
 		FireCh:             fireCh,
 		BatchFireCh:        batchFireCh,
 		KafkaFireCh:        kafkaFireCh,
+		TriggerPanicCh:     panicCh,
 		wakeupCh:           make(chan event.GenericEvent, 64),
 		pendingFires:       make(map[string][]corev1.EnvVar),
 		pendingBatchFires:  make(map[string][]trigger.BatchFireRequest),
 		pendingKafkaFires:  make(map[string][]trigger.KafkaFireRequest),
+		pendingPanics:      make(map[string]trigger.TriggerPanic),
 	}
 	go r.drainFireChannel()
 	go r.drainBatchFireChannel()
 	go r.drainKafkaFireChannel()
+	go r.drainPanicChannel()
 	return r
 }
 
@@ -143,6 +160,28 @@ func (r *WeaveTriggerReconciler) drainKafkaFireChannel() {
 	}
 }
 
+// drainPanicChannel reads from TriggerPanicCh, queues the quarantine, and wakes the reconciler.
+func (r *WeaveTriggerReconciler) drainPanicChannel() {
+	for p := range r.TriggerPanicCh {
+		key := p.Namespace + "/" + p.Name
+		r.pendingPanicsMu.Lock()
+		r.pendingPanics[key] = p
+		r.pendingPanicsMu.Unlock()
+		r.sendWakeup(p.Namespace, p.Name)
+	}
+}
+
+// consumePendingPanic returns and clears a pending quarantine report for key, if any.
+func (r *WeaveTriggerReconciler) consumePendingPanic(key string) (trigger.TriggerPanic, bool) {
+	r.pendingPanicsMu.Lock()
+	defer r.pendingPanicsMu.Unlock()
+	p, ok := r.pendingPanics[key]
+	if ok {
+		delete(r.pendingPanics, key)
+	}
+	return p, ok
+}
+
 // sendWakeup enqueues a GenericEvent for the given trigger so the reconciler runs immediately.
 func (r *WeaveTriggerReconciler) sendWakeup(namespace, name string) {
 	obj := &weavev1alpha1.WeaveTrigger{}
@@ -171,6 +210,50 @@ func (r *WeaveTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	key := req.NamespacedName.String()
+
+	// A pending panic report takes priority over everything else this cycle: the
+	// activation-source goroutine has already unregistered itself (so the trigger
+	// has effectively stopped firing), and we must reflect that in status before
+	// doing anything else — otherwise a later fire/wakeup event processed first
+	// would look like an ordinary reconcile with no indication anything is wrong.
+	if p, ok := r.consumePendingPanic(key); ok {
+		return r.quarantine(ctx, &ft, p)
+	}
+
+	// One-shot reset: clears quarantine (if set) and lets the reconcile proceed so
+	// syncActivationSources re-registers the activation source below. A reset on a
+	// trigger that was never quarantined is a harmless no-op.
+	wasReset := false
+	if ft.Annotations[annotationReset] == "true" {
+		patch := client.MergeFrom(ft.DeepCopy())
+		delete(ft.Annotations, annotationReset)
+		if ft.Status.Quarantined {
+			wasReset = true
+		}
+		if err := r.Patch(ctx, &ft, patch); err != nil {
+			return ctrl.Result{}, fmt.Errorf("remove reset annotation: %w", err)
+		}
+		if wasReset {
+			statusPatch := client.MergeFrom(ft.DeepCopy())
+			ft.Status.Quarantined = false
+			ft.Status.QuarantineReason = ""
+			ft.Status.QuarantinedAt = nil
+			if err := r.Status().Patch(ctx, &ft, statusPatch); err != nil {
+				return ctrl.Result{}, fmt.Errorf("clear quarantine: %w", err)
+			}
+			logger.Info("WeaveTrigger reset from quarantine", "trigger", ft.Name)
+		}
+	}
+
+	// A still-quarantined trigger must not have its activation source re-registered
+	// by syncActivationSources below (that would silently undo the whole point of
+	// quarantining it) — every other reconcile trigger (an owned WeaveRun completing,
+	// an unrelated annotation) must leave it offline until explicitly reset.
+	if ft.Status.Quarantined {
+		return ctrl.Result{}, nil
+	}
+
 	// Verify the referenced chain is valid.
 	var chain weavev1alpha1.WeaveChain
 	if err := r.Get(ctx, types.NamespacedName{
@@ -188,7 +271,6 @@ func (r *WeaveTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Check for a pending fire request (from cron callback or webhook).
-	key := req.NamespacedName.String()
 	overrides, hasFire := r.consumePendingFire(key)
 
 	// Check for on-demand fire annotation.
@@ -232,6 +314,7 @@ func (r *WeaveTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Mark active.
 	patch := client.MergeFrom(ft.DeepCopy())
 	ft.Status.Active = true
+	ft.Status.InactiveReason = ""
 	if err := r.Status().Patch(ctx, &ft, patch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch status: %w", err)
 	}
@@ -247,7 +330,7 @@ func (r *WeaveTriggerReconciler) syncActivationSources(ctx context.Context, ft *
 			return fmt.Errorf("spec.schedule is required for Cron trigger")
 		}
 		ns, name := ft.Namespace, ft.Name
-		return r.CronScheduler.Upsert(key, ft.Spec.Schedule, func() {
+		return r.CronScheduler.Upsert(key, ns, name, ft.Spec.Schedule, func() {
 			r.storePendingFire(key, nil)
 			r.sendWakeup(ns, name)
 		})
@@ -525,10 +608,34 @@ func (r *WeaveTriggerReconciler) createRun(
 func (r *WeaveTriggerReconciler) setInactive(ctx context.Context, ft *weavev1alpha1.WeaveTrigger, msg string) (ctrl.Result, error) {
 	patch := client.MergeFrom(ft.DeepCopy())
 	ft.Status.Active = false
+	ft.Status.InactiveReason = msg
 	if err := r.Status().Patch(ctx, ft, patch); err != nil {
 		return ctrl.Result{}, err
 	}
-	log.FromContext(ctx).Info("WeaveTrigger inactive", "reason", msg)
+	log.FromContext(ctx).Info("WeaveTrigger inactive", "trigger", ft.Name, "chain", ft.Spec.ChainRef.Name, "reason", msg)
+	return ctrl.Result{}, nil
+}
+
+// quarantine records a panic recovered from this trigger's activation-source
+// goroutine. The goroutine has already unregistered itself (see internal/trigger),
+// so the trigger has effectively stopped firing; this makes that visible on the
+// object (distinct from Spec.Paused, which is a user action) and prevents
+// syncActivationSources from silently re-registering it on a later reconcile.
+// Clearing it requires the fusion-platform.io/reset annotation — deliberately no
+// auto-retry, since a panic reflects a defect rather than a transient condition
+// like chain-not-found (which already self-heals via setInactive).
+func (r *WeaveTriggerReconciler) quarantine(ctx context.Context, ft *weavev1alpha1.WeaveTrigger, p trigger.TriggerPanic) (ctrl.Result, error) {
+	patch := client.MergeFrom(ft.DeepCopy())
+	now := metav1.Now()
+	ft.Status.Active = false
+	ft.Status.Quarantined = true
+	ft.Status.QuarantineReason = fmt.Sprintf("%s: %s", p.Source, p.Reason)
+	ft.Status.QuarantinedAt = &now
+	if err := r.Status().Patch(ctx, ft, patch); err != nil {
+		return ctrl.Result{}, fmt.Errorf("patch quarantine status: %w", err)
+	}
+	log.FromContext(ctx).Error(fmt.Errorf("%s", p.Reason), "WeaveTrigger quarantined after panic",
+		"trigger", ft.Name, "chain", ft.Spec.ChainRef.Name, "source", p.Source)
 	return ctrl.Result{}, nil
 }
 
@@ -651,7 +758,7 @@ func mergeEnvVars(base, overrides []corev1.EnvVar) []corev1.EnvVar {
 
 func (r *WeaveTriggerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Wake trigger reconciler when an owned WeaveRun completes.
-	enqueueFromRun := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+	enqueueFromRun := handler.EnqueueRequestsFromMapFunc(safeMapFunc("trigger/run", func(ctx context.Context, obj client.Object) []reconcile.Request {
 		run, ok := obj.(*weavev1alpha1.WeaveRun)
 		if !ok {
 			return nil
@@ -666,24 +773,24 @@ func (r *WeaveTriggerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				Name:      triggerName,
 			},
 		}}
-	})
+	}))
 
 	// source.Channel delivers GenericEvents from cron/webhook callbacks directly
 	// into the reconciler queue, bypassing the need for a k8s object change.
 	wakeupSource := source.Channel(r.wakeupCh, handler.EnqueueRequestsFromMapFunc(
-		func(_ context.Context, obj client.Object) []reconcile.Request {
+		safeMapFunc("trigger/wakeup", func(_ context.Context, obj client.Object) []reconcile.Request {
 			return []reconcile.Request{{
 				NamespacedName: types.NamespacedName{
 					Namespace: obj.GetNamespace(),
 					Name:      obj.GetName(),
 				},
 			}}
-		},
+		}),
 	))
 
 	// Watch ConfigMaps labelled with batch-trigger so that YAML changes
 	// immediately re-sync the BatchCronScheduler for the affected trigger.
-	enqueueFromConfigMap := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+	enqueueFromConfigMap := handler.EnqueueRequestsFromMapFunc(safeMapFunc("trigger/configMap", func(_ context.Context, obj client.Object) []reconcile.Request {
 		triggerName, ok := obj.GetLabels()[labelBatchTrigger]
 		if !ok {
 			return nil
@@ -694,7 +801,7 @@ func (r *WeaveTriggerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				Name:      triggerName,
 			},
 		}}
-	})
+	}))
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&weavev1alpha1.WeaveTrigger{}).

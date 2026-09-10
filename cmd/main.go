@@ -81,12 +81,19 @@ func main() {
 	// (not queued) when full, so the next cron tick catches up automatically.
 	batchFireCh := make(chan trigger.BatchFireRequest, 4096)
 
+	// Trigger panic channel — a cron/batchCron/kafka activation-source goroutine
+	// reports here (and unregisters itself) after recovering a panic, so the
+	// trigger controller can quarantine just that WeaveTrigger instead of the
+	// panic taking down the whole operator process (these goroutines run outside
+	// controller-runtime's per-Reconcile panic recovery).
+	triggerPanicCh := make(chan trigger.TriggerPanic, 64)
+
 	// Cron scheduler for standard Cron triggers.
-	cronScheduler := trigger.NewCronScheduler()
+	cronScheduler := trigger.NewCronScheduler(triggerPanicCh)
 	defer cronScheduler.Stop()
 
 	// Batch cron scheduler — isolated from the standard cron scheduler.
-	batchCronScheduler := trigger.NewBatchCronScheduler(batchFireCh)
+	batchCronScheduler := trigger.NewBatchCronScheduler(batchFireCh, triggerPanicCh)
 	defer batchCronScheduler.Stop()
 
 	// Kafka fire channel — KafkaConsumer writes here, trigger controller reads.
@@ -94,7 +101,7 @@ func main() {
 	kafkaFireCh := make(chan trigger.KafkaFireRequest, 1024)
 
 	// Kafka consumer — one goroutine per Kafka trigger.
-	kafkaConsumer := trigger.NewKafkaConsumer(kafkaFireCh)
+	kafkaConsumer := trigger.NewKafkaConsumer(kafkaFireCh, triggerPanicCh)
 	defer kafkaConsumer.Stop()
 
 	// Webhook server with token lookup via Kubernetes Secrets.
@@ -163,7 +170,7 @@ func main() {
 	triggerReconciler := controller.NewWeaveTriggerReconciler(
 		mgr.GetClient(), mgr.GetScheme(),
 		cronScheduler, batchCronScheduler, kafkaConsumer,
-		webhookServer, fireCh, batchFireCh, kafkaFireCh,
+		webhookServer, fireCh, batchFireCh, kafkaFireCh, triggerPanicCh,
 	)
 	if err := triggerReconciler.SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveTrigger controller")

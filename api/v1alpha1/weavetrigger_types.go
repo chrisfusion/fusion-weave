@@ -149,6 +149,29 @@ type WeaveTriggerStatus struct {
 	// BatchJobErrors is the number of job entries that failed validation (BatchCron only).
 	// +optional
 	BatchJobErrors int `json:"batchJobErrors,omitempty"`
+
+	// InactiveReason explains why Active is false (e.g. chain not found or invalid).
+	// Empty when Active is true. Distinct from QuarantineReason: this reflects an
+	// ordinary, self-healing condition on the referenced chain, not a system-recovered
+	// panic.
+	// +optional
+	InactiveReason string `json:"inactiveReason,omitempty"`
+
+	// Quarantined is true when the operator auto-disabled this trigger's activation
+	// source (cron/batchCron/kafka goroutine) after recovering a panic, to stop it
+	// from repeatedly failing. Distinct from Spec.Paused, which is a user action.
+	// While true, the trigger's activation source is unregistered and will not fire.
+	// Clear it by setting the fusion-platform.io/reset annotation to "true".
+	// +optional
+	Quarantined bool `json:"quarantined,omitempty"`
+
+	// QuarantineReason describes the panic that caused quarantine.
+	// +optional
+	QuarantineReason string `json:"quarantineReason,omitempty"`
+
+	// QuarantinedAt is when the trigger was quarantined.
+	// +optional
+	QuarantinedAt *metav1.Time `json:"quarantinedAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -157,6 +180,7 @@ type WeaveTriggerStatus struct {
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=".spec.type"
 // +kubebuilder:printcolumn:name="Chain",type=string,JSONPath=".spec.chainRef.name"
 // +kubebuilder:printcolumn:name="Active",type=boolean,JSONPath=".status.active"
+// +kubebuilder:printcolumn:name="Quarantined",type=boolean,JSONPath=".status.quarantined"
 // +kubebuilder:printcolumn:name="LastRun",type=string,JSONPath=".status.lastRunName"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 

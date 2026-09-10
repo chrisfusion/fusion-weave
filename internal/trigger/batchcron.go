@@ -5,6 +5,7 @@ package trigger
 
 import (
 	"container/heap"
+	"fmt"
 	"sync"
 	"time"
 
@@ -49,13 +50,26 @@ func (h *jobHeap) Pop() interface{} {
 type batchRunner struct {
 	ns, name string
 	fireCh   chan<- BatchFireRequest
+	// onPanic is invoked (in this goroutine) if run() recovers a panic, before the
+	// goroutine exits. It must deregister the runner from the owning scheduler and
+	// report the panic — after this, the whole trigger stops firing.
+	onPanic func(rec interface{})
 
 	heap     jobHeap
 	updateCh chan []BatchJob // receives updated job lists from BatchCronScheduler.Upsert
 	stopCh   chan struct{}
 }
 
+// run drives the min-heap until stopCh closes or a panic is recovered. A panic here
+// (e.g. from malformed job data) ends the goroutine entirely — same effect as Remove —
+// rather than crashing the operator process, since this loop runs outside
+// controller-runtime's per-Reconcile panic recovery.
 func (b *batchRunner) run() {
+	defer func() {
+		if rec := recover(); rec != nil && b.onPanic != nil {
+			b.onPanic(rec)
+		}
+	}()
 	heap.Init(&b.heap)
 	for {
 		var timer *time.Timer
@@ -119,15 +133,32 @@ func (b *batchRunner) run() {
 // to fireCh when a job is due. It is completely isolated from CronScheduler.
 type BatchCronScheduler struct {
 	fireCh  chan<- BatchFireRequest
+	panicCh chan<- TriggerPanic
 	mu      sync.Mutex
 	runners map[string]*batchRunner
 }
 
 // NewBatchCronScheduler creates a BatchCronScheduler that sends fire events to fireCh.
-func NewBatchCronScheduler(fireCh chan<- BatchFireRequest) *BatchCronScheduler {
+// A panic recovered from a trigger's runner goroutine is reported on panicCh
+// (non-blocking); that trigger's runner is removed so it does not fire again until
+// re-Upserted.
+func NewBatchCronScheduler(fireCh chan<- BatchFireRequest, panicCh chan<- TriggerPanic) *BatchCronScheduler {
 	return &BatchCronScheduler{
 		fireCh:  fireCh,
+		panicCh: panicCh,
 		runners: make(map[string]*batchRunner),
+	}
+}
+
+// reportPanic sends a non-blocking best-effort panic report; a full channel drops it
+// rather than blocking the runner goroutine that is already exiting.
+func (s *BatchCronScheduler) reportPanic(ns, name string, rec interface{}) {
+	if s.panicCh == nil {
+		return
+	}
+	select {
+	case s.panicCh <- TriggerPanic{Namespace: ns, Name: name, Source: PanicSourceBatchCron, Reason: fmt.Sprintf("%v", rec)}:
+	default:
 	}
 }
 
@@ -170,6 +201,12 @@ func (s *BatchCronScheduler) Upsert(key, ns, name string, jobs []BatchJob) {
 		heap:     h,
 		updateCh: make(chan []BatchJob, 1),
 		stopCh:   make(chan struct{}),
+	}
+	runner.onPanic = func(rec interface{}) {
+		s.mu.Lock()
+		delete(s.runners, key)
+		s.mu.Unlock()
+		s.reportPanic(ns, name, rec)
 	}
 	s.runners[key] = runner
 	go runner.run()
