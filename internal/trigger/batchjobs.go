@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
@@ -180,12 +179,17 @@ func nodeRawValue(node *yaml.Node, key string) string {
 }
 
 // SanitizeJobID makes a job ID safe for use inside a Kubernetes resource name.
-// It lowercases the string and replaces any non-alphanumeric character with '-',
-// trims leading/trailing dashes, and truncates to 32 characters.
+// It lowercases the string and replaces any character outside ASCII [a-z0-9] with
+// '-', trims leading/trailing dashes, and truncates to 32 characters. Restricted to
+// ASCII (not unicode.IsLetter/IsDigit, which admit non-ASCII letters and digits)
+// to match Kubernetes' DNS-1123 label rules — this result is used both as a label
+// value and as part of a WeaveRun's GenerateName prefix (weavetrigger_controller.go
+// createBatchRun), and a non-ASCII character there is rejected by the API server
+// even though it passed this "sanitization", failing job creation for that entry.
 func SanitizeJobID(id string) string {
 	var sb strings.Builder
 	for _, r := range strings.ToLower(id) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			sb.WriteRune(r)
 		} else {
 			sb.WriteRune('-')

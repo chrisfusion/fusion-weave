@@ -3,6 +3,8 @@
 
 // Command backup dumps or restores WeaveJobTemplate, WeaveServiceTemplate,
 // WeaveChain, and WeaveTrigger specs to/from S3 — never WeaveRun, never .status.
+// Also captures the jobs ConfigMap referenced by any BatchCron-type WeaveTrigger,
+// without which a restored BatchCron trigger can never reconcile successfully.
 //
 // Usage:
 //

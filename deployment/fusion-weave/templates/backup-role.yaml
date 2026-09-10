@@ -19,4 +19,10 @@ rules:
       - weavechains
       - weavetriggers
     verbs: ["get", "list", "watch"]
+  # get only: DumpObjects fetches each BatchCron trigger's jobs ConfigMap by the
+  # exact name in spec.batchCron.jobsConfigMapRef, never lists/watches ConfigMaps.
+  - apiGroups: [""]
+    resources:
+      - configmaps
+    verbs: ["get"]
 {{- end }}

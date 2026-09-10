@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/apiserver/middleware"
 	"fusion-platform.io/fusion-weave/internal/trigger"
 )
 
@@ -128,7 +129,15 @@ func (h *BatchTriggerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Data: map[string]string{batchJobsKey: req.Jobs},
 	}
 	if err := h.client.Create(r.Context(), cm); err != nil {
-		_ = h.client.Delete(r.Context(), ft)
+		if delErr := h.client.Delete(r.Context(), ft); delErr != nil {
+			// The same transient failure that broke ConfigMap creation may also
+			// break this rollback, leaving an orphaned, permanently-broken
+			// WeaveTrigger with no ConfigMap and no diagnostic trail — log it
+			// explicitly rather than silently discarding it, since internalError
+			// below only reports the original ConfigMap error.
+			middleware.LoggerFromCtx(r.Context()).Error("rollback failed: could not delete orphaned WeaveTrigger after ConfigMap create failure",
+				"trigger", req.Name, "error", delErr)
+		}
 		internalError(w, r, err, "kind", "ConfigMap", "name", cmName)
 		return
 	}

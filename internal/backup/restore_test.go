@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -74,6 +75,49 @@ func TestDumpRestoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDumpRestoreRoundTrip_BatchCronConfigMap proves a BatchCron trigger's jobs
+// ConfigMap survives a dump/restore cycle — without it, the restored trigger can
+// never reconcile (syncBatchCronSource fails "ConfigMap ... not found" forever).
+func TestDumpRestoreRoundTrip_BatchCronConfigMap(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "jobs-cm", Namespace: "fusion"},
+		Data:       map[string]string{"jobs.yaml": "- id: j1\n  schedule: \"0 * * * *\"\n"},
+	}
+	trigger := &weavev1alpha1.WeaveTrigger{
+		ObjectMeta: metav1.ObjectMeta{Name: "batch-trigger", Namespace: "fusion"},
+		Spec: weavev1alpha1.WeaveTriggerSpec{
+			ChainRef: corev1.LocalObjectReference{Name: "demo"},
+			Type:     weavev1alpha1.TriggerBatchCron,
+			BatchCron: &weavev1alpha1.WeaveBatchCronConfig{
+				JobsConfigMapRef: corev1.LocalObjectReference{Name: "jobs-cm"},
+			},
+		},
+	}
+	src := seededClient(t).WithObjects(cm, trigger).Build()
+
+	var buf strings.Builder
+	if _, err := DumpObjects(context.Background(), src, "fusion", &buf); err != nil {
+		t.Fatalf("DumpObjects: %v", err)
+	}
+
+	dst := seededClient(t).Build()
+	result, err := RestoreObjects(context.Background(), dst, strings.NewReader(buf.String()), "fusion")
+	if err != nil {
+		t.Fatalf("RestoreObjects: %v", err)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected no errors, got %v", result.Errors)
+	}
+
+	var restored corev1.ConfigMap
+	if err := dst.Get(context.Background(), client.ObjectKey{Name: "jobs-cm", Namespace: "fusion"}, &restored); err != nil {
+		t.Fatalf("get restored configmap: %v", err)
+	}
+	if restored.Data["jobs.yaml"] != cm.Data["jobs.yaml"] {
+		t.Errorf("restored configmap data mismatch: got %q, want %q", restored.Data["jobs.yaml"], cm.Data["jobs.yaml"])
+	}
+}
+
 func TestRestoreObjects_AlreadyExistsIsSkippedNotFatal(t *testing.T) {
 	existing := &weavev1alpha1.WeaveChain{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "fusion"}}
 	dst := seededClient(t).WithObjects(existing).Build()
@@ -119,7 +163,7 @@ func TestRestoreObjects_ForcesTargetNamespace(t *testing.T) {
 
 func TestRestoreObjects_UnrecognizedKindErrors(t *testing.T) {
 	dst := seededClient(t).Build()
-	stream := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: not-ours\n"
+	stream := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: not-ours\n"
 	if _, err := RestoreObjects(context.Background(), dst, strings.NewReader(stream), "fusion"); err == nil {
 		t.Fatal("expected an error for an unrecognized kind, got nil")
 	}

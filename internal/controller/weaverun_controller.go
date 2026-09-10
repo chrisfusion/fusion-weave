@@ -547,7 +547,7 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					if stepSpec != nil && stepSpec.ServiceTemplateRef != nil {
 						svcTmpl := serviceTemplates[stepSpec.ServiceTemplateRef.Name]
 						if svcTmpl != nil {
-							r.registerRunActiveDeployment(&run, name, deploy.Name, override, svcTmpl)
+							r.registerRunActiveDeployment(ctx, &run, name, deploy.Name, override, svcTmpl)
 						}
 					}
 				} else {
@@ -1276,8 +1276,13 @@ func (r *WeaveRunReconciler) handleRunDeletion(ctx context.Context, run *weavev1
 			return ctrl.Result{}, err
 		}
 	}
+	// Patch (not Update) for the same reason as every other finalizer removal in
+	// this file: Update sends the entire object as the informer cache returned it,
+	// which — during a rolling operator upgrade — can be a pre-upgrade copy missing
+	// a newly-added spec field, silently erasing it in etcd.
+	base := client.MergeFrom(run.DeepCopy())
 	controllerutil.RemoveFinalizer(run, finalizerDeployCleanup)
-	if err := r.Update(ctx, run); err != nil {
+	if err := r.Patch(ctx, run, base); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove deploy-cleanup finalizer on deletion: %w", err)
 	}
 	return ctrl.Result{}, nil
@@ -1438,6 +1443,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 // registerRunActiveDeployment records a run-owned deployment in run.Status.ActiveDeployments
 // for code-source polling. It mutates run in-place; the caller's final status patch persists it.
 func (r *WeaveRunReconciler) registerRunActiveDeployment(
+	ctx context.Context,
 	run *weavev1alpha1.WeaveRun,
 	stepName, deploymentName string,
 	override *weavev1alpha1.WeaveRunStepOverride,
@@ -1457,6 +1463,22 @@ func (r *WeaveRunReconciler) registerRunActiveDeployment(
 		CodeSourceTag:            override.Tag,
 		CodeSourceIndexURL:       indexURL,
 	}
+
+	// Resolve the initial version, same as the chain-owned path
+	// (registerActiveDeployment) — best-effort, a failure is non-fatal since the
+	// polling loop will populate it on the first successful poll. Without this,
+	// CodeSourceDeployedVersion starts as "" while pollRunDeploymentCodeSource's
+	// `current == entry.CodeSourceDeployedVersion` short-circuit compares against
+	// a real resolved tag, so it never matches on the very first poll and every
+	// run-owned deploy step gets an unconditional, unnecessary rolling restart
+	// immediately after becoming Deployed.
+	if version, resolveErr := indexclient.ResolveTag(ctx, indexURL, override.ArtifactName, override.Tag); resolveErr == nil {
+		entry.CodeSourceDeployedVersion = version
+	} else {
+		log.FromContext(ctx).Error(resolveErr, "could not resolve initial code-source version",
+			"artifact", override.ArtifactName, "tag", override.Tag)
+	}
+
 	if run.Status.ActiveDeployments == nil {
 		run.Status.ActiveDeployments = map[string]weavev1alpha1.WeaveActiveDeploymentStatus{}
 	}

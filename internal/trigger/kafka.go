@@ -50,9 +50,22 @@ type kafkaRunner struct {
 	onPanic func(rec interface{})
 }
 
-func newKafkaRunner(ns, name string, fireCh chan<- KafkaFireRequest, cfg KafkaRunnerConfig, onPanic func(rec interface{})) *kafkaRunner {
+// newKafkaRunner builds onPanic itself (rather than accepting one as a parameter)
+// so it can close over the runner it creates and pass that exact pointer to
+// removeIfCurrent — closing the construction fully, including onPanic, before
+// starting the goroutine guarantees run() can only ever observe it in its finished
+// state (the goroutine-creation happens-before edge), with no window for a data
+// race on which runner instance a late panic is allowed to deregister. Comparing by
+// identity (not just by key) matters because Upsert can replace c.runners[key] with
+// a newer runner while this one's goroutine is still unwinding from a panic; without
+// the identity check, that unwind would delete the newer, live runner instead.
+func newKafkaRunner(c *KafkaConsumer, key, ns, name string, fireCh chan<- KafkaFireRequest, cfg KafkaRunnerConfig) *kafkaRunner {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &kafkaRunner{ns: ns, name: name, fireCh: fireCh, cfg: cfg, cancel: cancel, onPanic: onPanic}
+	r := &kafkaRunner{ns: ns, name: name, fireCh: fireCh, cfg: cfg, cancel: cancel}
+	r.onPanic = func(rec interface{}) {
+		c.removeIfCurrent(key, r)
+		c.reportPanic(ns, name, rec)
+	}
 	go r.run(ctx)
 	return r
 }
@@ -179,13 +192,18 @@ func (c *KafkaConsumer) Upsert(key, ns, name string, cfg KafkaRunnerConfig) {
 	if r, ok := c.runners[key]; ok {
 		r.stop()
 	}
-	onPanic := func(rec interface{}) {
-		c.mu.Lock()
+	c.runners[key] = newKafkaRunner(c, key, ns, name, c.fireCh, cfg)
+}
+
+// removeIfCurrent removes key's runner only if r is still the one registered for
+// it — a no-op if a newer Upsert(key, ...) has already replaced it (see
+// newKafkaRunner for why this identity check, not a plain delete-by-key, is needed).
+func (c *KafkaConsumer) removeIfCurrent(key string, r *kafkaRunner) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cur, ok := c.runners[key]; ok && cur == r {
 		delete(c.runners, key)
-		c.mu.Unlock()
-		c.reportPanic(ns, name, rec)
 	}
-	c.runners[key] = newKafkaRunner(ns, name, c.fireCh, cfg, onPanic)
 }
 
 // Remove stops and removes the consumer goroutine for key.

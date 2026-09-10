@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -142,6 +143,79 @@ func TestDumpObjects_Ordering(t *testing.T) {
 			t.Fatalf("expected %s to appear after previous kind, order violated:\n%s", kind, out)
 		}
 		lastIdx = idx
+	}
+}
+
+func TestDumpObjects_CapturesBatchCronConfigMap(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "jobs-cm", Namespace: "fusion"},
+		Data:       map[string]string{"jobs.yaml": "- id: j1\n  schedule: \"0 * * * *\"\n"},
+	}
+	// Two BatchCron triggers referencing the SAME ConfigMap — must be dumped once.
+	t1 := &weavev1alpha1.WeaveTrigger{
+		ObjectMeta: metav1.ObjectMeta{Name: "t1", Namespace: "fusion"},
+		Spec: weavev1alpha1.WeaveTriggerSpec{
+			ChainRef: corev1.LocalObjectReference{Name: "demo"},
+			Type:     weavev1alpha1.TriggerBatchCron,
+			BatchCron: &weavev1alpha1.WeaveBatchCronConfig{
+				JobsConfigMapRef: corev1.LocalObjectReference{Name: "jobs-cm"},
+			},
+		},
+	}
+	t2 := &weavev1alpha1.WeaveTrigger{
+		ObjectMeta: metav1.ObjectMeta{Name: "t2", Namespace: "fusion"},
+		Spec: weavev1alpha1.WeaveTriggerSpec{
+			ChainRef: corev1.LocalObjectReference{Name: "demo"},
+			Type:     weavev1alpha1.TriggerBatchCron,
+			BatchCron: &weavev1alpha1.WeaveBatchCronConfig{
+				JobsConfigMapRef: corev1.LocalObjectReference{Name: "jobs-cm"},
+			},
+		},
+	}
+	// A non-BatchCron trigger must not cause any ConfigMap lookup at all.
+	onDemand := &weavev1alpha1.WeaveTrigger{
+		ObjectMeta: metav1.ObjectMeta{Name: "t3", Namespace: "fusion"},
+		Spec: weavev1alpha1.WeaveTriggerSpec{
+			ChainRef: corev1.LocalObjectReference{Name: "demo"},
+			Type:     weavev1alpha1.TriggerOnDemand,
+		},
+	}
+	c := seededClient(t).WithObjects(cm, t1, t2, onDemand).Build()
+
+	var buf strings.Builder
+	count, err := DumpObjects(context.Background(), c, "fusion", &buf)
+	if err != nil {
+		t.Fatalf("DumpObjects: %v", err)
+	}
+	// 3 triggers + 1 deduplicated ConfigMap.
+	if count != 4 {
+		t.Fatalf("expected 4 objects (3 triggers + 1 deduped configmap), got %d:\n%s", count, buf.String())
+	}
+	out := buf.String()
+	if got := strings.Count(out, "kind: ConfigMap"); got != 1 {
+		t.Fatalf("expected exactly 1 ConfigMap document (deduplicated across 2 referencing triggers), got %d:\n%s", got, out)
+	}
+	if !strings.Contains(out, "name: jobs-cm") {
+		t.Fatalf("expected the referenced configmap name in output:\n%s", out)
+	}
+}
+
+func TestDumpObjects_MissingBatchCronConfigMapErrors(t *testing.T) {
+	t1 := &weavev1alpha1.WeaveTrigger{
+		ObjectMeta: metav1.ObjectMeta{Name: "t1", Namespace: "fusion"},
+		Spec: weavev1alpha1.WeaveTriggerSpec{
+			ChainRef: corev1.LocalObjectReference{Name: "demo"},
+			Type:     weavev1alpha1.TriggerBatchCron,
+			BatchCron: &weavev1alpha1.WeaveBatchCronConfig{
+				JobsConfigMapRef: corev1.LocalObjectReference{Name: "does-not-exist"},
+			},
+		},
+	}
+	c := seededClient(t).WithObjects(t1).Build()
+
+	var buf strings.Builder
+	if _, err := DumpObjects(context.Background(), c, "fusion", &buf); err == nil {
+		t.Fatal("expected an error when a BatchCron trigger's jobs ConfigMap is missing, got nil")
 	}
 }
 

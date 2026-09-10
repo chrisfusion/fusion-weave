@@ -58,6 +58,9 @@ type batchRunner struct {
 	heap     jobHeap
 	updateCh chan []BatchJob // receives updated job lists from BatchCronScheduler.Upsert
 	stopCh   chan struct{}
+	// dead is closed when run() returns, for any reason (panic, stopCh, or a bug in
+	// this loop) — see Upsert for why callers must check it before trusting updateCh.
+	dead chan struct{}
 }
 
 // run drives the min-heap until stopCh closes or a panic is recovered. A panic here
@@ -65,6 +68,7 @@ type batchRunner struct {
 // rather than crashing the operator process, since this loop runs outside
 // controller-runtime's per-Reconcile panic recovery.
 func (b *batchRunner) run() {
+	defer close(b.dead)
 	defer func() {
 		if rec := recover(); rec != nil && b.onPanic != nil {
 			b.onPanic(rec)
@@ -169,16 +173,42 @@ func (s *BatchCronScheduler) Upsert(key, ns, name string, jobs []BatchJob) {
 	defer s.mu.Unlock()
 
 	if runner, ok := s.runners[key]; ok {
-		// Replace job list in the existing runner without restarting the goroutine.
-		// updateCh is buffered(1); drain any stale pending update first.
+		alive := true
 		select {
-		case <-runner.updateCh:
+		case <-runner.dead:
+			alive = false
 		default:
 		}
-		runner.updateCh <- jobs
-		return
+		if alive {
+			// Replace job list in the existing runner without restarting the
+			// goroutine. updateCh is buffered(1); drain any stale pending update
+			// first. The dead check above closes almost all of the window where a
+			// concurrently-panicking run() would otherwise never read this send
+			// (its own select loop has already exited) — a few instructions of
+			// residual race remain, inherent to signaling "the goroutine is about
+			// to stop reading" via a channel it does not hold a lock across. If hit,
+			// the update is silently lost here but not permanently: the next
+			// reconcile of this trigger calls Upsert again with the full current
+			// job list.
+			select {
+			case <-runner.updateCh:
+			default:
+			}
+			runner.updateCh <- jobs
+			return
+		}
+		// Runner already exited (panic or otherwise) but onPanic hasn't reaped it
+		// from the map yet — fall through and start a fresh one below instead of
+		// sending into a channel nothing will ever read again.
+		delete(s.runners, key)
 	}
 
+	s.startRunnerLocked(key, ns, name, jobs)
+}
+
+// startRunnerLocked builds the initial heap and starts the goroutine for a new
+// trigger key. Callers must hold s.mu.
+func (s *BatchCronScheduler) startRunnerLocked(key, ns, name string, jobs []BatchJob) {
 	now := time.Now()
 	h := make(jobHeap, 0, len(jobs))
 	for i := range jobs {
@@ -201,15 +231,27 @@ func (s *BatchCronScheduler) Upsert(key, ns, name string, jobs []BatchJob) {
 		heap:     h,
 		updateCh: make(chan []BatchJob, 1),
 		stopCh:   make(chan struct{}),
+		dead:     make(chan struct{}),
 	}
+	// onPanic closes over runner (not just key) so a late panic from a superseded
+	// generation of this trigger's runner can never delete a newer, live one —
+	// removeIfCurrent compares identity, not just the map key.
 	runner.onPanic = func(rec interface{}) {
-		s.mu.Lock()
-		delete(s.runners, key)
-		s.mu.Unlock()
+		s.removeIfCurrent(key, runner)
 		s.reportPanic(ns, name, rec)
 	}
 	s.runners[key] = runner
 	go runner.run()
+}
+
+// removeIfCurrent removes key's runner only if r is still the one registered for
+// it — a no-op if a newer Upsert(key, ...) has already replaced it.
+func (s *BatchCronScheduler) removeIfCurrent(key string, r *batchRunner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cur, ok := s.runners[key]; ok && cur == r {
+		delete(s.runners, key)
+	}
 }
 
 // Remove stops and removes the runner for the given trigger key.

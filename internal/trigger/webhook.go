@@ -140,11 +140,20 @@ func (w *WebhookServer) handle(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.FireCh <- FireRequest{
+	// Non-blocking: unlike a dropped Kafka/batch-cron tick (which the source will
+	// naturally retry), a webhook caller is waiting on this HTTP request, so if the
+	// reconciler's drain goroutine is lagging and FireCh is full we must fail fast
+	// with a response instead of blocking the handler goroutine indefinitely —
+	// under sustained load that would accumulate one blocked goroutine/connection
+	// per request with no bound, taking the endpoint down for everyone.
+	select {
+	case w.FireCh <- FireRequest{
 		TriggerNamespace:   entry.namespace,
 		TriggerName:        entry.triggerName,
 		ParameterOverrides: overrides,
+	}:
+		rw.WriteHeader(http.StatusAccepted)
+	default:
+		http.Error(rw, "trigger queue full, retry shortly", http.StatusServiceUnavailable)
 	}
-
-	rw.WriteHeader(http.StatusAccepted)
 }

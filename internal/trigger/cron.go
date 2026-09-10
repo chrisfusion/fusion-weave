@@ -42,12 +42,26 @@ func (s *CronScheduler) Upsert(key, ns, name, schedule string, fn func()) error 
 
 	if id, ok := s.entries[key]; ok {
 		s.c.Remove(id)
+		delete(s.entries, key)
 	}
 
+	// idBox is set to this invocation's own EntryID right after AddFunc registers
+	// it below. wrapped only ever passes its ADDRESS around and never reads *idBox
+	// itself outside s.mu (removeIfCurrent dereferences it after locking) — idBox's
+	// write here and its read there are both inside s.mu's critical section, so the
+	// mutex supplies the happens-before edge the Go memory model requires; without
+	// that, this is a genuine data race (a plain read of idBox in wrapped, racing
+	// this write, is exactly what `go test -race` flags). The point of tracking a
+	// per-invocation ID at all: a panicking tick must remove exactly the entry IT
+	// was registered as, never whatever a concurrent Upsert(key, ...) may have since
+	// installed under the same key — removing by key alone would let a straggling
+	// panic from a superseded schedule delete the new, valid entry instead, silently
+	// stopping the trigger while Status.Active keeps reporting true.
+	var idBox cron.EntryID
 	wrapped := func() {
 		defer func() {
 			if rec := recover(); rec != nil {
-				s.Remove(key)
+				s.removeIfCurrent(key, &idBox)
 				s.reportPanic(ns, name, rec)
 			}
 		}()
@@ -58,8 +72,24 @@ func (s *CronScheduler) Upsert(key, ns, name, schedule string, fn func()) error 
 	if err != nil {
 		return err
 	}
+	idBox = id
 	s.entries[key] = id
 	return nil
+}
+
+// removeIfCurrent removes key's cron entry only if *idPtr is still the one
+// registered for it — a no-op if a newer Upsert(key, ...) has already superseded
+// it. Takes a pointer (dereferenced only here, under s.mu) rather than a value so
+// the read of idBox in Upsert's wrapped closure is synchronized against Upsert's
+// write to it, both inside s.mu's critical section.
+func (s *CronScheduler) removeIfCurrent(key string, idPtr *cron.EntryID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := *idPtr
+	if cur, ok := s.entries[key]; ok && cur == id {
+		s.c.Remove(id)
+		delete(s.entries, key)
+	}
 }
 
 // reportPanic sends a non-blocking best-effort panic report; a full channel drops it

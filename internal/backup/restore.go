@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -128,6 +129,14 @@ func RestoreObjects(ctx context.Context, c client.Client, r io.Reader, namespace
 			o := &weavev1alpha1.WeaveTrigger{}
 			if err := yaml.Unmarshal(raw, o); err != nil {
 				return result, fmt.Errorf("unmarshal WeaveTrigger: %w", err)
+			}
+			obj = o
+		case "ConfigMap":
+			// The jobs ConfigMap a BatchCron-type WeaveTrigger references
+			// (spec.batchCron.jobsConfigMapRef) — see DumpObjects.
+			o := &corev1.ConfigMap{}
+			if err := yaml.Unmarshal(raw, o); err != nil {
+				return result, fmt.Errorf("unmarshal ConfigMap: %w", err)
 			}
 			obj = o
 		default:

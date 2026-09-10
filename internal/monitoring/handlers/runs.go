@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"net/http"
+	"sync"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -36,9 +37,14 @@ type RunDetail struct {
 // RunsHandler serves GET /monitor/v1/runs and GET /monitor/v1/runs/{name}.
 // seenRuns tracks terminal runs whose duration has already been observed in the
 // runDurationSeconds histogram, preventing double-counting across polling cycles.
+// RunsHandler is a shared singleton served concurrently by chi, so seenRuns must be
+// guarded — two overlapping requests racing a cache miss (e.g. concurrent Prometheus
+// scrapes) would otherwise both write it from different goroutines, an unsynchronized
+// concurrent map write that panics and crashes the whole API server process.
 type RunsHandler struct {
 	Base
-	seenRuns map[string]struct{}
+	seenRunsMu sync.Mutex
+	seenRuns   map[string]struct{}
 }
 
 func NewRunsHandler(b Base) *RunsHandler {
@@ -108,12 +114,15 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 
 		// Observe run duration exactly once per terminal run.
 		if terminalRunPhases[run.Status.Phase] {
-			if _, seen := h.seenRuns[run.Name]; !seen {
-				if run.Status.StartTime != nil && run.Status.CompletionTime != nil {
-					d := run.Status.CompletionTime.Time.Sub(run.Status.StartTime.Time).Seconds()
-					runDurationSeconds.WithLabelValues(chain, string(run.Status.Phase)).Observe(d)
-				}
+			h.seenRunsMu.Lock()
+			_, seen := h.seenRuns[run.Name]
+			if !seen {
 				h.seenRuns[run.Name] = struct{}{}
+			}
+			h.seenRunsMu.Unlock()
+			if !seen && run.Status.StartTime != nil && run.Status.CompletionTime != nil {
+				d := run.Status.CompletionTime.Time.Sub(run.Status.StartTime.Time).Seconds()
+				runDurationSeconds.WithLabelValues(chain, string(run.Status.Phase)).Observe(d)
 			}
 		}
 
