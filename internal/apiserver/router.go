@@ -47,6 +47,8 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitori
 		r.Post("/batchtriggers/{name}/resume", batchHandler.Resume)
 
 		registerCRUD(r, "/kafkatriggers", handlers.NewKafkaTriggerHandler(c, cfg.Namespace))
+
+		r.Get("/external-auth/options", handlers.NewExternalAuthOptionsHandler(cfg.ExternalAuthServiceAccounts, cfg.ExternalAuthOIDCSecrets))
 	})
 
 	// Monitoring API v1 — same auth/RBAC middleware; all endpoints are GET-only

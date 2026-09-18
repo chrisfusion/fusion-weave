@@ -1364,6 +1364,32 @@ curl -X DELETE -H "Authorization: Bearer $KEY" \
 
 ---
 
+## External Auth Options
+
+`GET /api/v1/external-auth/options` reports the deploy-time allowlists an operator configured for `WeaveExternalAuthRef` (`WeaveChainSpec.ExternalAuthRef`, `WeaveTriggerSpec.ExternalAuthRefOverride`, `WeaveRunSpec.ExternalAuthRefOverride`) — the ServiceAccount names valid for `mode: serviceAccount` and the Secret names valid for `mode: oidc`. Intended for a GUI to populate a name picker once the user selects a mode, instead of hardcoding or guessing valid values (an invalid `name` fails admission with `externalAuthRef.name "..." is not in the configured allowlist for mode "..."`).
+
+The response echoes `EXTERNAL_AUTH_SERVICE_ACCOUNTS`/`EXTERNAL_AUTH_OIDC_SECRETS` (or the equivalent `externalAuth.serviceAccounts`/`externalAuth.oidcSecrets` Helm values) as-is — no cluster lookup, so an allowlisted name that doesn't exist yet still appears here.
+
+### Get options
+
+```
+GET /api/v1/external-auth/options
+```
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  http://localhost:8082/api/v1/external-auth/options
+```
+
+```json
+{
+  "serviceAccounts": ["fusion-external-runner"],
+  "oidcSecrets": ["keycloak-client-fusion-etl"]
+}
+```
+
+---
+
 ## Complete Endpoint Index
 
 | Method | Path | Role required | Description |
@@ -1416,6 +1442,7 @@ curl -X DELETE -H "Authorization: Bearer $KEY" \
 | PATCH | `/api/v1/runs/{name}` | editor | Partial update a WeaveRun |
 | POST | `/api/v1/runs/{name}/stop` | editor | Stop a run (`status.phase=Stopped`) |
 | DELETE | `/api/v1/runs/{name}` | admin | Delete a WeaveRun and its child resources |
+| GET | `/api/v1/external-auth/options` | viewer | List allowlisted ServiceAccount/Secret names for `externalAuthRef` |
 | GET | `/monitor/v1/runs` | viewer | List all WeaveRun summaries |
 | GET | `/monitor/v1/runs/{name}` | viewer | Run detail (run + jobs + events) |
 | GET | `/monitor/v1/runs/{name}/jobs` | viewer | batch/v1 Jobs for a run |

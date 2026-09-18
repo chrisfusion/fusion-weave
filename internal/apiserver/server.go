@@ -67,11 +67,11 @@ type Config struct {
 	LogFormat string
 
 	// ExternalAuthServiceAccounts is a colon-separated allowlist of ServiceAccount
-	// names available for externalAuthRef.mode=serviceAccount (for a future GUI
-	// query endpoint — not yet exposed via any route).
+	// names available for externalAuthRef.mode=serviceAccount, exposed read-only
+	// via GET /api/v1/external-auth/options for GUI name pickers.
 	ExternalAuthServiceAccounts string
 	// ExternalAuthOIDCSecrets is a colon-separated allowlist of Secret names
-	// available for externalAuthRef.mode=oidc (same caveat as above).
+	// available for externalAuthRef.mode=oidc, exposed the same way.
 	ExternalAuthOIDCSecrets string
 }
 
