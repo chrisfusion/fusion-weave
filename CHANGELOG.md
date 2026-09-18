@@ -7,6 +7,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-18
+
 ### Added
 - `WeaveChainSpec.ExternalAuthRef` (with `WeaveTriggerSpec.ExternalAuthRefOverride`/`WeaveRunSpec.ExternalAuthRefOverride`) — new, independent auth mechanism parallel to `AuthSecretRef`: names a deploy-time-allowlisted ServiceAccount or Keycloak OIDC client, and the operator mints a short-lived token per job-creation attempt (fresh on every retry) via the Kubernetes TokenRequest API or a Keycloak `client_credentials` grant, delivered as a mounted file (plus non-sensitive discovery env vars) without the job's own code/image ever seeing the underlying credential. Job-kind steps only. `mintServiceAccountToken` clamps any derived TTL up to Kubernetes' own 10-minute floor for `TokenRequest.spec.expirationSeconds` (confirmed against a real cluster: shorter values are rejected outright with "may not specify a duration less than 10 minutes", which would otherwise break minting for any step with a short `activeDeadlineSeconds`).
 - `WeaveChainSpec.UnsafeEnvironmentInjector` (with trigger/run overrides, default `true`) — governs whether `AuthSecretRef` and `ExternalAuthRef` are also injected as environment variables, on top of their now-unconditional file mounts. Defaulting `true` preserves existing `AuthSecretRef` `envFrom` behavior for every pre-existing chain.
