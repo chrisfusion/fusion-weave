@@ -432,7 +432,7 @@ func TestBuildIngressFromOverride_NoIngressSpec_NoName_ReturnsNil(t *testing.T) 
 }
 
 func TestBuildIngressFromOverride_NameOnly_DefaultPath(t *testing.T) {
-	// No template ingress, no meta pathPrefix → Ingress is created with path "/".
+	// No template ingress, no meta ingress path → Ingress is created with path "/".
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	ov := &weavev1alpha1.WeaveRunStepOverride{
 		StepName: "step1", ArtifactName: "org.myapp", Tag: "stable",
@@ -451,11 +451,11 @@ func TestBuildIngressFromOverride_NameOnly_DefaultPath(t *testing.T) {
 	}
 }
 
-func TestBuildIngressFromOverride_MetaPathPrefix_SetAsPath(t *testing.T) {
-	// meta.Ingress.PathPrefix → path becomes "/" + pathPrefix.
+func TestBuildIngressFromOverride_MetaIngressPath_SetAsPath(t *testing.T) {
+	// meta.Ingress.Path → path becomes "/" + path (normalized).
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	meta := &indexclient.AppMetadata{
-		Ingress: indexclient.AppIngress{PathPrefix: "myapp"},
+		Ingress: indexclient.AppIngress{Path: "myapp"},
 		Runner:  indexclient.AppRunner{Port: 8080},
 	}
 	ov := &weavev1alpha1.WeaveRunStepOverride{
@@ -468,11 +468,32 @@ func TestBuildIngressFromOverride_MetaPathPrefix_SetAsPath(t *testing.T) {
 	}
 	path := ing.Spec.Rules[0].IngressRuleValue.HTTP.Paths[0].Path
 	if path != "/myapp" {
-		t.Errorf("expected path '/myapp' from meta.Ingress.PathPrefix, got %q", path)
+		t.Errorf("expected path '/myapp' from meta.Ingress.Path, got %q", path)
 	}
 	svcPort := ing.Spec.Rules[0].IngressRuleValue.HTTP.Paths[0].Backend.Service.Port.Number
 	if svcPort != 8080 {
 		t.Errorf("expected service port 8080 from meta, got %d", svcPort)
+	}
+}
+
+func TestBuildIngressFromOverride_MetaIngressPath_RootNormalizesToSlash(t *testing.T) {
+	// An explicit "/" in metadata.yaml normalizes to root, same as unset.
+	tmpl := minTmpl("myrepo/myapp:1.0")
+	meta := &indexclient.AppMetadata{
+		Ingress: indexclient.AppIngress{Path: "/"},
+		Runner:  indexclient.AppRunner{Port: 8080},
+	}
+	ov := &weavev1alpha1.WeaveRunStepOverride{
+		StepName: "step1", ArtifactName: "org.myapp", Tag: "stable",
+		IngressName: "myapp",
+	}
+	ing := deploybuilder.BuildIngressFromOverride(tmpl, meta, ov, "run1", "step1", "fusion", "svc.instance-a.fusion.example.com")
+	if ing == nil {
+		t.Fatal("expected ingress to be created")
+	}
+	path := ing.Spec.Rules[0].IngressRuleValue.HTTP.Paths[0].Path
+	if path != "/" {
+		t.Errorf("expected root path '/' from meta.Ingress.Path '/', got %q", path)
 	}
 }
 

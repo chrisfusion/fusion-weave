@@ -21,7 +21,7 @@ runner:
     LOG_LEVEL: debug
     WORKERS: "4"
 ingress:
-  pathPrefix: myapp
+  path: myapp
 resources:
   requests:
     cpu: 100m
@@ -52,8 +52,8 @@ resources:
 	if meta.Runner.Args["WORKERS"] != "4" {
 		t.Errorf("runner.args[WORKERS]: got %q, want 4", meta.Runner.Args["WORKERS"])
 	}
-	if meta.Ingress.PathPrefix != "myapp" {
-		t.Errorf("ingress.pathPrefix: got %q, want myapp", meta.Ingress.PathPrefix)
+	if meta.Ingress.Path != "myapp" {
+		t.Errorf("ingress.path: got %q, want myapp", meta.Ingress.Path)
 	}
 	wantCPUReq := resource.MustParse("100m")
 	if got := meta.Resources.Requests[corev1.ResourceCPU]; got.Cmp(wantCPUReq) != 0 {
@@ -73,8 +73,8 @@ func TestParseMetadata_Empty(t *testing.T) {
 	if meta.Runner.Type != "" || meta.Runner.Port != 0 || meta.Runner.BuilderImage != "" {
 		t.Errorf("expected zero runner, got %+v", meta.Runner)
 	}
-	if meta.Ingress.PathPrefix != "" {
-		t.Errorf("expected empty ingress pathPrefix, got %q", meta.Ingress.PathPrefix)
+	if meta.Ingress.Path != "" {
+		t.Errorf("expected empty ingress path, got %q", meta.Ingress.Path)
 	}
 	if meta.Maintainer != "" {
 		t.Errorf("expected empty maintainer, got %q", meta.Maintainer)
@@ -130,8 +130,27 @@ func TestParseMetadata_MissingIngress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if meta.Ingress.PathPrefix != "" {
-		t.Errorf("ingress.pathPrefix should be empty when ingress section absent, got %q", meta.Ingress.PathPrefix)
+	if meta.Ingress.Path != "" {
+		t.Errorf("ingress.path should be empty when ingress section absent, got %q", meta.Ingress.Path)
+	}
+}
+
+func TestNormalizeIngressPath(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{"", "/"},
+		{"/", "/"},
+		{"myapp", "/myapp"},
+		{"/myapp", "/myapp"},
+		{"myapp/", "/myapp"},
+		{"/myapp/", "/myapp"},
+	}
+	for _, c := range cases {
+		if got := NormalizeIngressPath(c.raw); got != c.want {
+			t.Errorf("NormalizeIngressPath(%q): got %q, want %q", c.raw, got, c.want)
+		}
 	}
 }
 

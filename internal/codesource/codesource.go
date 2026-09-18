@@ -31,8 +31,8 @@ func EnvVars(artifactName, tag, version, namespace, mountPath string, meta *inde
 		if meta.Runner.Port > 0 {
 			vars = append(vars, corev1.EnvVar{Name: "WEAVE_PORT", Value: strconv.Itoa(int(meta.Runner.Port))})
 		}
-		if meta.Ingress.PathPrefix != "" {
-			vars = append(vars, corev1.EnvVar{Name: "WEAVE_INGRESS_PATH_PREFIX", Value: meta.Ingress.PathPrefix})
+		if meta.Ingress.Path != "" {
+			vars = append(vars, corev1.EnvVar{Name: "WEAVE_INGRESS_PATH", Value: indexclient.NormalizeIngressPath(meta.Ingress.Path)})
 		}
 		if meta.Runner.Type != "" {
 			vars = append(vars, corev1.EnvVar{Name: "WEAVE_RUNNER_TYPE", Value: meta.Runner.Type})

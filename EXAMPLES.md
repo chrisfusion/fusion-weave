@@ -568,7 +568,7 @@ spec:
   type: OnDemand
 ```
 
-**What the operator injects automatically:** `WEAVE_ARTIFACT`, `WEAVE_TAG`, `WEAVE_VERSION`, `WEAVE_NAMESPACE`, `WEAVE_MOUNT_PATH`, plus (once fusion-index metadata resolves) `WEAVE_PORT`, `WEAVE_RUNNER_TYPE`, `WEAVE_BUILDER_IMAGE`, `WEAVE_MAINTAINER`, `WEAVE_INGRESS_PATH_PREFIX`, and every key in the artifact's `runner.args` map.
+**What the operator injects automatically:** `WEAVE_ARTIFACT`, `WEAVE_TAG`, `WEAVE_VERSION`, `WEAVE_NAMESPACE`, `WEAVE_MOUNT_PATH`, plus (once fusion-index metadata resolves) `WEAVE_PORT`, `WEAVE_RUNNER_TYPE`, `WEAVE_BUILDER_IMAGE`, `WEAVE_MAINTAINER`, `WEAVE_INGRESS_PATH`, and every key in the artifact's `runner.args` map.
 
 **Keeping it fresh:** the chain controller polls fusion-index every `CODE_SOURCE_POLL_INTERVAL` (default `60s`) and rolling-restarts the Deployment when the tag resolves to a new version. To force one immediately:
 ```bash

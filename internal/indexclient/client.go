@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -98,7 +99,11 @@ type AppRunner struct {
 
 // AppIngress holds ingress configuration parsed from an artifact's metadata.yaml.
 type AppIngress struct {
-	PathPrefix string
+	// Path is the URL path segment the app should be served under (e.g. "showcase"
+	// results in "/showcase"). Raw/trimmed as authored; empty means unset — callers
+	// distinguish "unset" (fall back to template config) from an explicit root ("/").
+	// Use NormalizeIngressPath to canonicalize for actual use.
+	Path string
 }
 
 // AppMetadata is the subset of metadata.yaml fields the operator uses at runtime.
@@ -120,7 +125,7 @@ type rawMetadata struct {
 		BuilderImage string            `yaml:"builderImage" json:"builderImage"`
 	} `yaml:"runner" json:"runner"`
 	Ingress struct {
-		PathPrefix string `yaml:"pathPrefix" json:"pathPrefix"`
+		Path string `yaml:"path" json:"path"`
 	} `yaml:"ingress" json:"ingress"`
 	Resources struct {
 		Requests map[string]string `yaml:"requests" json:"requests"`
@@ -219,7 +224,7 @@ func parseMetadata(data []byte) (*AppMetadata, error) {
 			BuilderImage: raw.Runner.BuilderImage,
 		},
 		Ingress: AppIngress{
-			PathPrefix: raw.Ingress.PathPrefix,
+			Path: strings.TrimSpace(raw.Ingress.Path),
 		},
 	}
 
@@ -244,6 +249,17 @@ func parseMetadata(data []byte) (*AppMetadata, error) {
 		}
 	}
 	return meta, nil
+}
+
+// NormalizeIngressPath canonicalizes an AppIngress.Path value into a single
+// leading-slash path segment suitable for a Kubernetes Ingress rule's path.
+// Empty or "/" both normalize to root "/".
+func NormalizeIngressPath(raw string) string {
+	trimmed := strings.Trim(raw, "/")
+	if trimmed == "" {
+		return "/"
+	}
+	return "/" + trimmed
 }
 
 func resolveTagForID(ctx context.Context, baseURL string, artifactID int64, tag string) (string, error) {

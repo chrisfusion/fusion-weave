@@ -488,7 +488,7 @@ The loader fires on **every pod start** — including the first start of a new r
 
 | Always present | Present when metadata was fetched successfully |
 |---|---|
-| `WEAVE_ARTIFACT`, `WEAVE_TAG`, `WEAVE_VERSION`, `WEAVE_NAMESPACE`, `WEAVE_MOUNT_PATH` | `WEAVE_PORT`, `WEAVE_INGRESS_PATH_PREFIX`, `WEAVE_RUNNER_TYPE`, `WEAVE_BUILDER_IMAGE`, `WEAVE_MAINTAINER`, plus every `runner.args` key from `metadata.yaml` as a plain env var |
+| `WEAVE_ARTIFACT`, `WEAVE_TAG`, `WEAVE_VERSION`, `WEAVE_NAMESPACE`, `WEAVE_MOUNT_PATH` | `WEAVE_PORT`, `WEAVE_INGRESS_PATH`, `WEAVE_RUNNER_TYPE`, `WEAVE_BUILDER_IMAGE`, `WEAVE_MAINTAINER`, plus every `runner.args` key from `metadata.yaml` as a plain env var |
 
 `internal/indexclient/client.go` is the shared HTTP client used by the operator (not the init container binary, which has its own minimal copy in `cmd/loader/main.go` to avoid an extra binary dependency): `ResolveTag` returns just the semver string; `FetchAppMetadataAndVersion` additionally downloads and parses `metadata.yaml` (via `sigs.k8s.io/yaml`) into an `AppMetadata{Runner, Ingress, Resources, Maintainer}` struct in one round-trip-efficient call. `runner.args` in `metadata.yaml` is a **map**, not a list of `{name, value}` objects — a schema detail worth calling out because it's easy to assume list-style like `env`. `runner.args` keys that collide with `WeaveServiceTemplateSpec.Env`/`WeaveJobTemplateSpec.Env` entries produce silent duplicate env vars (the builder appends without deduplication); template env comes first, so runner.args effectively wins at container runtime (last value wins).
 

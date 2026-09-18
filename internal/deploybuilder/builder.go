@@ -638,7 +638,8 @@ func BuildServiceFromOverride(
 
 // BuildIngressFromOverride constructs a run-owned Ingress for a step override.
 // override.IngressName overrides the name from the template's ingress rules.
-// meta.Ingress.PathPrefix, when set, replaces the path in the first rule.
+// meta.Ingress.Path, when set, replaces the path in the first rule (normalized
+// via indexclient.NormalizeIngressPath — empty or "/" both mean root "/").
 // hostSuffix is the cluster-wide ingress host suffix; the resolved name is
 // joined with it to form the full hostname (see IngressHost).
 // Returns nil when the template has no Ingress spec and override.IngressName is empty.
@@ -670,8 +671,8 @@ func BuildIngressFromOverride(
 	}
 
 	path := "/"
-	if meta != nil && meta.Ingress.PathPrefix != "" {
-		path = "/" + meta.Ingress.PathPrefix
+	if meta != nil && meta.Ingress.Path != "" {
+		path = indexclient.NormalizeIngressPath(meta.Ingress.Path)
 	} else if tmpl.Spec.Ingress != nil && len(tmpl.Spec.Ingress.Rules) > 0 {
 		path = tmpl.Spec.Ingress.Rules[0].Path
 	}
