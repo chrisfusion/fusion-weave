@@ -84,6 +84,36 @@ spec:
                 - Wait
                 - Forbid
                 type: string
+              externalAuthRef:
+                description: |-
+                  ExternalAuthRef optionally names a deploy-time-allowlisted external identity
+                  (see WeaveExternalAuthRef) the operator mints a short-lived token for and
+                  injects into every Job-kind step pod of this chain (never Deploy-kind).
+                  Independent of AuthSecretRef — both may be set together. Overridable
+                  per-trigger (WeaveTriggerSpec.ExternalAuthRefOverride) or per-run
+                  (WeaveRunSpec.ExternalAuthRefOverride).
+                properties:
+                  mode:
+                    description: |-
+                      Mode selects which deploy-time allowlist Name is validated against:
+                      "serviceAccount" (helm externalAuth.serviceAccounts) or "oidc" (helm
+                      externalAuth.oidcSecrets).
+                    enum:
+                    - serviceAccount
+                    - oidc
+                    type: string
+                  name:
+                    description: |-
+                      Name must match an entry in the allowlist for Mode. For serviceAccount mode
+                      this is the ServiceAccount name the operator mints a TokenRequest token for.
+                      For oidc mode this is the name of the Secret holding Keycloak client
+                      credentials the operator uses for a client_credentials grant.
+                    minLength: 1
+                    type: string
+                required:
+                - mode
+                - name
+                type: object
               failurePolicy:
                 default: StopAll
                 description: FailurePolicy controls chain-wide failure behaviour.
@@ -322,6 +352,15 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+              unsafeEnvironmentInjector:
+                description: |-
+                  UnsafeEnvironmentInjector controls whether AuthSecretRef and ExternalAuthRef
+                  are ALSO injected as environment variables, on top of the always-unconditional
+                  file mounts both mechanisms provide. Defaults to true when nil, so existing
+                  chains relying on AuthSecretRef's envFrom behavior are unaffected. Overridable
+                  per-trigger (WeaveTriggerSpec.UnsafeEnvironmentInjectorOverride) or per-run
+                  (WeaveRunSpec.UnsafeEnvironmentInjectorOverride).
+                type: boolean
             required:
             - steps
             type: object

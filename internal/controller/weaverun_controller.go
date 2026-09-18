@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ import (
 	"fusion-platform.io/fusion-weave/internal/deploybuilder"
 	"fusion-platform.io/fusion-weave/internal/indexclient"
 	"fusion-platform.io/fusion-weave/internal/jobbuilder"
+	"fusion-platform.io/fusion-weave/internal/keycloakclient"
 	"fusion-platform.io/fusion-weave/internal/security"
 )
 
@@ -53,6 +55,14 @@ var weaveRunGVK = schema.GroupVersionKind{
 	Kind:    "WeaveRun",
 }
 
+// batchJobGVK is the GVK used when constructing owner references for the
+// per-attempt external-auth Secret (owned by the Job, not the WeaveRun).
+var batchJobGVK = schema.GroupVersionKind{
+	Group:   "batch",
+	Version: "v1",
+	Kind:    "Job",
+}
+
 // WeaveRunReconciler executes the DAG of a WeaveRun by managing batch/v1 Jobs.
 type WeaveRunReconciler struct {
 	client.Client
@@ -64,6 +74,18 @@ type WeaveRunReconciler struct {
 	LoaderImage            string
 	WritablePaths          []string
 	IngressHostSuffix      string
+	// ExternalAuthServiceAccounts is the deploy-time allowlist of ServiceAccount
+	// names usable with WeaveExternalAuthRef{Mode: serviceAccount}.
+	ExternalAuthServiceAccounts []string
+	// ExternalAuthOIDCSecrets is the deploy-time allowlist of Secret names usable
+	// with WeaveExternalAuthRef{Mode: oidc}.
+	ExternalAuthOIDCSecrets []string
+	// ExternalAuthDefaultTTL is the fallback minted-token lifetime used when a
+	// step's WeaveJobTemplate has no ActiveDeadlineSeconds set.
+	ExternalAuthDefaultTTL time.Duration
+	// ExternalAuthSAAudience is the aud claim set on every minted ServiceAccount
+	// token (serviceAccount mode only).
+	ExternalAuthSAAudience string
 }
 
 // failStepNow marks a step Failed with a message and records the completion time.
@@ -265,6 +287,107 @@ func (r *WeaveRunReconciler) resolveAuthSecretName(ctx context.Context, run *wea
 	return "", nil
 }
 
+// resolveExternalAuthRef determines the effective WeaveExternalAuthRef for every
+// Job-kind step pod of this run: run override → trigger override → chain default.
+// A missing/deleted trigger falls back to the chain default rather than failing
+// the run (mirrors resolveAuthSecretName). Returns nil, nil when no level sets a
+// ref. Validates the resolved ref's Name against the allowlist for its Mode —
+// this is the ONLY validation point for ExternalAuthRefOverride at trigger/run
+// level; validateChain validates the chain-level default at admission time, but
+// trigger/run overrides are deliberately not admission-gated, same as
+// AuthSecretRefOverride has no admission-time validation anywhere today.
+func (r *WeaveRunReconciler) resolveExternalAuthRef(ctx context.Context, run *weavev1alpha1.WeaveRun, chain *weavev1alpha1.WeaveChain) (*weavev1alpha1.WeaveExternalAuthRef, error) {
+	var ref *weavev1alpha1.WeaveExternalAuthRef
+
+	switch {
+	case run.Spec.ExternalAuthRefOverride != nil:
+		ref = run.Spec.ExternalAuthRefOverride
+	case run.Spec.TriggerRef != nil:
+		var trigger weavev1alpha1.WeaveTrigger
+		err := r.Get(ctx, types.NamespacedName{
+			Namespace: run.Namespace, Name: run.Spec.TriggerRef.Name,
+		}, &trigger)
+		switch {
+		case err == nil && trigger.Spec.ExternalAuthRefOverride != nil:
+			ref = trigger.Spec.ExternalAuthRefOverride
+		case err != nil && !errors.IsNotFound(err):
+			return nil, fmt.Errorf("get trigger %q for run %q: %w", run.Spec.TriggerRef.Name, run.Name, err)
+		}
+	}
+	if ref == nil {
+		ref = chain.Spec.ExternalAuthRef
+	}
+	if ref == nil {
+		return nil, nil
+	}
+
+	var allowed []string
+	switch ref.Mode {
+	case weavev1alpha1.ExternalAuthModeServiceAccount:
+		allowed = r.ExternalAuthServiceAccounts
+	case weavev1alpha1.ExternalAuthModeOIDC:
+		allowed = r.ExternalAuthOIDCSecrets
+	default:
+		return nil, fmt.Errorf("externalAuthRef.mode %q must be serviceAccount or oidc", ref.Mode)
+	}
+	if !slices.Contains(allowed, ref.Name) {
+		return nil, fmt.Errorf("externalAuthRef.name %q is not in the configured allowlist for mode %q", ref.Name, ref.Mode)
+	}
+	return ref, nil
+}
+
+// resolveUnsafeEnvironmentInjector determines whether AuthSecretRef/ExternalAuthRef
+// should ALSO be injected as env vars (on top of their always-unconditional file
+// mounts): run override → trigger override → chain default → true (nil default
+// preserves existing AuthSecretRef envFrom behavior for chains predating this field).
+func (r *WeaveRunReconciler) resolveUnsafeEnvironmentInjector(ctx context.Context, run *weavev1alpha1.WeaveRun, chain *weavev1alpha1.WeaveChain) (bool, error) {
+	if run.Spec.UnsafeEnvironmentInjectorOverride != nil {
+		return *run.Spec.UnsafeEnvironmentInjectorOverride, nil
+	}
+	if run.Spec.TriggerRef != nil {
+		var trigger weavev1alpha1.WeaveTrigger
+		err := r.Get(ctx, types.NamespacedName{
+			Namespace: run.Namespace, Name: run.Spec.TriggerRef.Name,
+		}, &trigger)
+		switch {
+		case err == nil && trigger.Spec.UnsafeEnvironmentInjectorOverride != nil:
+			return *trigger.Spec.UnsafeEnvironmentInjectorOverride, nil
+		case err != nil && !errors.IsNotFound(err):
+			return false, fmt.Errorf("get trigger %q for run %q: %w", run.Spec.TriggerRef.Name, run.Name, err)
+		}
+	}
+	if chain.Spec.UnsafeEnvironmentInjector != nil {
+		return *chain.Spec.UnsafeEnvironmentInjector, nil
+	}
+	return true, nil
+}
+
+// deleteExternalAuthSecret best-effort deletes the per-attempt ephemeral auth
+// Secret for the given job name. Not fatal on error — OwnerReference-driven GC
+// (owned by the Job) is the backstop; this call is purely proactive, to avoid
+// unbounded Secret accumulation for long-retained Jobs (no ttlSecondsAfterFinished
+// is set on Jobs in this repo).
+func (r *WeaveRunReconciler) deleteExternalAuthSecret(ctx context.Context, ns, jobName string) {
+	secretName := jobbuilder.ExternalAuthSecretName(jobName)
+	if err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: ns}}); err != nil && !errors.IsNotFound(err) {
+		log.FromContext(ctx).Error(err, "failed to proactively delete external auth secret", "secret", secretName)
+	}
+}
+
+// mintOIDCToken reads the allowlisted Secret's Keycloak client credentials and
+// performs a client_credentials grant to obtain a short-lived access token.
+func (r *WeaveRunReconciler) mintOIDCToken(ctx context.Context, ns, secretName string) (string, error) {
+	var sec corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: secretName}, &sec); err != nil {
+		return "", fmt.Errorf("get oidc credentials secret %q: %w", secretName, err)
+	}
+	tok, err := keycloakclient.MintClientCredentialsToken(ctx, string(sec.Data["tokenURL"]), string(sec.Data["clientId"]), string(sec.Data["clientSecret"]))
+	if err != nil {
+		return "", err
+	}
+	return tok.AccessToken, nil
+}
+
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weaveruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weaveruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -275,6 +398,8 @@ func (r *WeaveRunReconciler) resolveAuthSecretName(ctx context.Context, run *wea
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts/token,verbs=create
 
 func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -391,6 +516,14 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	authSecretName, err := r.resolveAuthSecretName(ctx, &run, &chain)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("resolve auth secret: %w", err)
+	}
+	externalAuthRef, err := r.resolveExternalAuthRef(ctx, &run, &chain)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolve external auth ref: %w", err)
+	}
+	unsafeEnvInjector, err := r.resolveUnsafeEnvironmentInjector(ctx, &run, &chain)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolve unsafe environment injector: %w", err)
 	}
 
 	// Load all referenced job templates (deduplicated), skipping deploy-kind steps.
@@ -648,6 +781,9 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			ss.CompletionTime = &now
 			stepStates[name] = dag.StepPhaseSucceeded
 			stepMap[name] = ss
+			if externalAuthRef != nil {
+				r.deleteExternalAuthSecret(ctx, run.Namespace, job.Name)
+			}
 		} else if isJobFailed(&job) {
 			stepSpec := findStepSpec(chain.Spec.Steps, name)
 			if stepSpec == nil {
@@ -679,6 +815,9 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					"attempt", ss.RetryCount+1, "maxRetries", maxRetries,
 					"reason", failureReason)
 				_ = r.Delete(ctx, &job)
+				if externalAuthRef != nil {
+					r.deleteExternalAuthSecret(ctx, run.Namespace, job.Name)
+				}
 				ss.RetryCount++
 				retryAt := metav1.NewTime(time.Now().Add(time.Duration(backoff) * time.Second))
 				ss.NextRetryAfter = &retryAt
@@ -693,6 +832,9 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					"step", name, "run", run.Name, "retries", ss.RetryCount)
 				failStepNow(&ss, failureReason)
 				stepStates[name] = dag.StepPhaseFailed
+				if externalAuthRef != nil {
+					r.deleteExternalAuthSecret(ctx, run.Namespace, job.Name)
+				}
 			}
 			stepMap[name] = ss
 		}
@@ -728,9 +870,9 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				override := findStepOverride(run.Spec.StepOverrides, stepName)
 				var syncErr error
 				if override != nil {
-					syncErr = r.syncDeployStepFromOverride(ctx, runWithGVK, stepSpec, svcTmpl, override, &ss, authSecretName)
+					syncErr = r.syncDeployStepFromOverride(ctx, runWithGVK, stepSpec, svcTmpl, override, &ss, authSecretName, unsafeEnvInjector)
 				} else {
-					syncErr = r.syncDeployStep(ctx, &chain, &run, stepSpec, svcTmpl, &ss, authSecretName)
+					syncErr = r.syncDeployStep(ctx, &chain, &run, stepSpec, svcTmpl, &ss, authSecretName, unsafeEnvInjector)
 				}
 				if syncErr != nil {
 					logger.Error(syncErr, "deploy step failed to sync", "step", stepName, "run", run.Name)
@@ -785,16 +927,74 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					csMeta, csVersion = r.fetchCodeSourceMetadataBestEffort(ctx, cs)
 				}
 
-				job := jobbuilder.Build(tmpl, stepSpec, &run, ss.RetryCount, inputConfigMap, run.Status.SharedPVCName, r.SecurityDefaults, authSecretName, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths)
+				externalAuthSecretName := ""
+				if externalAuthRef != nil {
+					jobName := jobbuilder.JobName(run.Name, stepName, ss.RetryCount)
+					externalAuthSecretName = jobbuilder.ExternalAuthSecretName(jobName)
+
+					ttl := r.ExternalAuthDefaultTTL
+					if tmpl.Spec.ActiveDeadlineSeconds != nil {
+						ttl = time.Duration(*tmpl.Spec.ActiveDeadlineSeconds)*time.Second + 60*time.Second
+					}
+
+					var token string
+					var mintErr error
+					switch externalAuthRef.Mode {
+					case weavev1alpha1.ExternalAuthModeServiceAccount:
+						token, mintErr = r.mintServiceAccountToken(ctx, run.Namespace, externalAuthRef.Name, ttl)
+					case weavev1alpha1.ExternalAuthModeOIDC:
+						token, mintErr = r.mintOIDCToken(ctx, run.Namespace, externalAuthRef.Name)
+					}
+					if mintErr != nil {
+						logger.Error(mintErr, "failed to mint external auth token", "step", stepName, "run", run.Name)
+						failStepNow(&ss, fmt.Sprintf("failed to mint external auth token: %v", mintErr))
+						stepStates[stepName] = dag.StepPhaseFailed
+						stepMap[stepName] = ss
+						continue
+					}
+
+					extSecret := &corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{Name: externalAuthSecretName, Namespace: run.Namespace},
+						StringData: map[string]string{"token": token},
+					}
+					if err := r.Create(ctx, extSecret); err != nil && !errors.IsAlreadyExists(err) {
+						logger.Error(err, "failed to create external auth secret", "step", stepName, "run", run.Name)
+						failStepNow(&ss, fmt.Sprintf("failed to create external auth secret: %v", err))
+						stepStates[stepName] = dag.StepPhaseFailed
+						stepMap[stepName] = ss
+						continue
+					}
+				}
+
+				job := jobbuilder.Build(tmpl, stepSpec, &run, ss.RetryCount, inputConfigMap, run.Status.SharedPVCName, r.SecurityDefaults, authSecretName, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, unsafeEnvInjector, externalAuthRef, externalAuthSecretName)
 				job.OwnerReferences = []metav1.OwnerReference{
 					*metav1.NewControllerRef(runWithGVK, weaveRunGVK),
 				}
 				if err := r.Create(ctx, job); err != nil && !errors.IsAlreadyExists(err) {
+					if externalAuthSecretName != "" {
+						_ = r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: externalAuthSecretName, Namespace: run.Namespace}})
+					}
 					logger.Error(err, "failed to create job", "step", stepName, "run", run.Name)
 					failStepNow(&ss, fmt.Sprintf("failed to create job: %v", err))
 					stepStates[stepName] = dag.StepPhaseFailed
 					stepMap[stepName] = ss
 					continue
+				}
+				if externalAuthSecretName != "" {
+					jobWithGVK := job.DeepCopy()
+					jobWithGVK.TypeMeta = metav1.TypeMeta{
+						APIVersion: batchJobGVK.GroupVersion().String(),
+						Kind:       batchJobGVK.Kind,
+					}
+					secretPatch := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: externalAuthSecretName, Namespace: run.Namespace}}
+					patch := client.MergeFrom(secretPatch.DeepCopy())
+					secretPatch.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(jobWithGVK, batchJobGVK)}
+					if err := r.Patch(ctx, secretPatch, patch); err != nil {
+						// Non-fatal: OwnerReference is a GC backstop, not required for
+						// correctness — the proactive delete at the terminal hooks below
+						// still cleans this up by name regardless of ownership.
+						logger.Error(err, "failed to set owner reference on external auth secret", "step", stepName, "run", run.Name)
+					}
 				}
 				logger.Info("job step starting", "step", stepName, "run", run.Name)
 				if ss.StartTime == nil {
@@ -883,6 +1083,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	svcTmpl *weavev1alpha1.WeaveServiceTemplate,
 	ss *weavev1alpha1.WeaveRunStepStatus,
 	authSecretName string,
+	unsafeEnvironmentInjector bool,
 ) error {
 	chainWithGVK := chain.DeepCopy()
 	chainWithGVK.TypeMeta = metav1.TypeMeta{
@@ -903,7 +1104,7 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	}
 
 	// Upsert Deployment.
-	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, authSecretName)
+	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, authSecretName, unsafeEnvironmentInjector)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment
@@ -1384,6 +1585,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	override *weavev1alpha1.WeaveRunStepOverride,
 	ss *weavev1alpha1.WeaveRunStepStatus,
 	authSecretName string,
+	unsafeEnvironmentInjector bool,
 ) error {
 	indexURL := r.resolveIndexURL(override.IndexURL)
 	meta, csVersion, err := indexclient.FetchAppMetadataAndVersion(ctx, indexURL, override.ArtifactName, override.Tag)
@@ -1394,7 +1596,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	ownerRef := metav1.NewControllerRef(runWithGVK, weaveRunGVK)
 	deployName := deploybuilder.RunDeploymentName(runWithGVK.Name, stepSpec.Name)
 
-	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, authSecretName)
+	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, authSecretName, unsafeEnvironmentInjector)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment

@@ -154,6 +154,16 @@ type WeaveRunSpec struct {
 	// envFrom into every step pod of this run.
 	// +optional
 	AuthSecretRefOverride *corev1.LocalObjectReference `json:"authSecretRefOverride,omitempty"`
+
+	// ExternalAuthRefOverride overrides WeaveChainSpec.ExternalAuthRef (and any
+	// WeaveTriggerSpec.ExternalAuthRefOverride) for this run only.
+	// +optional
+	ExternalAuthRefOverride *WeaveExternalAuthRef `json:"externalAuthRefOverride,omitempty"`
+
+	// UnsafeEnvironmentInjectorOverride overrides WeaveChainSpec.UnsafeEnvironmentInjector
+	// (and any WeaveTriggerSpec.UnsafeEnvironmentInjectorOverride) for this run only.
+	// +optional
+	UnsafeEnvironmentInjectorOverride *bool `json:"unsafeEnvironmentInjectorOverride,omitempty"`
 }
 
 // WeaveRunStatus reflects the live execution state of the run.

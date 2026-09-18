@@ -62,6 +62,16 @@ func JobName(runName, stepName string, retryCount int32) string {
 	return codesource.TruncateK8sName(suffix, 63)
 }
 
+// ExternalAuthSecretName returns the deterministic name of the ephemeral Secret
+// holding the minted external-auth token for one job attempt — derived from the
+// Job's own name so a new retry (a new Job) naturally gets a fresh Secret. Not
+// truncated separately: jobName is already ≤63 bytes (see JobName), and Secret
+// names are subject only to the generic 253-byte object-name limit, not the
+// 63-byte pod-label limit that forces JobName's truncation.
+func ExternalAuthSecretName(jobName string) string {
+	return jobName + "-ext-auth"
+}
+
 // Build constructs a batch/v1 Job for the given step.
 // The job is owned by the WeaveRun (ownerRef must be set by the caller).
 // inputConfigMap is the name of the run's output ConfigMap; pass a non-empty
@@ -86,6 +96,9 @@ func Build(
 	defaultIndexURL string,
 	defaultLoaderImage string,
 	writablePaths []string,
+	unsafeEnvironmentInjector bool,
+	externalAuthRef *weavev1alpha1.WeaveExternalAuthRef,
+	externalAuthSecretName string,
 ) *batchv1.Job {
 	name := JobName(run.Name, step.Name, retryCount)
 	ns := run.Namespace
@@ -210,9 +223,47 @@ func Build(
 	}
 
 	var envFrom []corev1.EnvFromSource
-	if authSecretName != "" {
+	if authSecretName != "" && unsafeEnvironmentInjector {
 		envFrom = []corev1.EnvFromSource{
 			{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: authSecretName}}},
+		}
+	}
+	if authSecretName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "weave-auth-secret",
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: authSecretName}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "weave-auth-secret",
+			MountPath: "/var/run/secrets/fusion-platform.io/auth-secret",
+			ReadOnly:  true,
+		})
+		env = append(env, corev1.EnvVar{Name: "WEAVE_AUTH_SECRET_DIR", Value: "/var/run/secrets/fusion-platform.io/auth-secret"})
+	}
+
+	if externalAuthSecretName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "weave-external-auth",
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: externalAuthSecretName}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "weave-external-auth",
+			MountPath: "/var/run/secrets/fusion-platform.io/external-auth",
+			ReadOnly:  true,
+		})
+		env = append(env,
+			corev1.EnvVar{Name: "WEAVE_EXTERNAL_AUTH_TOKEN_FILE", Value: "/var/run/secrets/fusion-platform.io/external-auth/token"},
+			corev1.EnvVar{Name: "WEAVE_EXTERNAL_AUTH_MODE", Value: string(externalAuthRef.Mode)},
+			corev1.EnvVar{Name: "WEAVE_EXTERNAL_AUTH_NAME", Value: externalAuthRef.Name},
+		)
+		if unsafeEnvironmentInjector {
+			env = append(env, corev1.EnvVar{
+				Name: "WEAVE_EXTERNAL_AUTH_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: externalAuthSecretName},
+					Key:                  "token",
+				}},
+			})
 		}
 	}
 

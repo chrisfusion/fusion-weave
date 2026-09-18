@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 {{- $cs := .Values.codeSource | default dict -}}
+{{- $ea := .Values.externalAuth | default dict -}}
 {{- $ingress := .Values.ingress | default dict -}}
 {{- $workload := .Values.workload | default dict -}}
 {{- $defaultWorkloadSecurity := dict
@@ -90,6 +91,18 @@ spec:
             - name: INGRESS_HOST_SUFFIX
               value: {{ $ingress.hostSuffix | quote }}
             {{- end }}
+            {{- if $ea.serviceAccounts }}
+            - name: EXTERNAL_AUTH_SERVICE_ACCOUNTS
+              value: {{ join ":" $ea.serviceAccounts | quote }}
+            {{- end }}
+            {{- if $ea.oidcSecrets }}
+            - name: EXTERNAL_AUTH_OIDC_SECRETS
+              value: {{ join ":" $ea.oidcSecrets | quote }}
+            {{- end }}
+            - name: EXTERNAL_AUTH_DEFAULT_TTL
+              value: {{ $ea.defaultTokenTTL | default "5m" | quote }}
+            - name: EXTERNAL_AUTH_SA_AUDIENCE
+              value: {{ $ea.saAudience | default "fusion" | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- with .Values.containerSecurityContext }}

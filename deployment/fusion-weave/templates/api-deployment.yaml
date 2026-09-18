@@ -6,6 +6,7 @@
 {{- $apiService := $api.service | default dict -}}
 {{- $apiImage := $api.image | default dict -}}
 {{- $apiSA := $api.serviceAccount | default dict -}}
+{{- $ea := .Values.externalAuth | default dict -}}
 {{- if $api.enabled }}
 # SPDX-License-Identifier: GPL-3.0-or-later
 apiVersion: apps/v1
@@ -83,6 +84,14 @@ spec:
               value: {{ $apiLog.level | default "info" | quote }}
             - name: LOG_FORMAT
               value: {{ $apiLog.format | default "json" | quote }}
+            {{- if $ea.serviceAccounts }}
+            - name: EXTERNAL_AUTH_SERVICE_ACCOUNTS
+              value: {{ join ":" $ea.serviceAccounts | quote }}
+            {{- end }}
+            {{- if $ea.oidcSecrets }}
+            - name: EXTERNAL_AUTH_OIDC_SECRETS
+              value: {{ join ":" $ea.oidcSecrets | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ $apiService.port | default 8082 }}

@@ -60,6 +60,7 @@ func Build(
 	defaultLoaderImage string,
 	writablePaths []string,
 	authSecretName string,
+	unsafeEnvironmentInjector bool,
 ) *appsv1.Deployment {
 	name := DeploymentName(chainName, stepName)
 	labels := map[string]string{
@@ -156,10 +157,22 @@ func Build(
 	}
 
 	var envFrom []corev1.EnvFromSource
-	if authSecretName != "" {
+	if authSecretName != "" && unsafeEnvironmentInjector {
 		envFrom = []corev1.EnvFromSource{
 			{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: authSecretName}}},
 		}
+	}
+	if authSecretName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "weave-auth-secret",
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: authSecretName}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "weave-auth-secret",
+			MountPath: "/var/run/secrets/fusion-platform.io/auth-secret",
+			ReadOnly:  true,
+		})
+		env = append(env, corev1.EnvVar{Name: "WEAVE_AUTH_SECRET_DIR", Value: "/var/run/secrets/fusion-platform.io/auth-secret"})
 	}
 
 	container := corev1.Container{
@@ -378,6 +391,7 @@ func BuildFromOverride(
 	defaultLoaderImage string,
 	writablePaths []string,
 	authSecretName string,
+	unsafeEnvironmentInjector bool,
 ) *appsv1.Deployment {
 	name := RunDeploymentName(runName, stepName)
 	labels := map[string]string{
@@ -489,10 +503,22 @@ func BuildFromOverride(
 	}
 
 	var envFrom []corev1.EnvFromSource
-	if authSecretName != "" {
+	if authSecretName != "" && unsafeEnvironmentInjector {
 		envFrom = []corev1.EnvFromSource{
 			{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: authSecretName}}},
 		}
+	}
+	if authSecretName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "weave-auth-secret",
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: authSecretName}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "weave-auth-secret",
+			MountPath: "/var/run/secrets/fusion-platform.io/auth-secret",
+			ReadOnly:  true,
+		})
+		env = append(env, corev1.EnvVar{Name: "WEAVE_AUTH_SECRET_DIR", Value: "/var/run/secrets/fusion-platform.io/auth-secret"})
 	}
 
 	container := corev1.Container{

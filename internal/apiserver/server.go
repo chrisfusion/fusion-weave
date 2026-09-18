@@ -65,6 +65,14 @@ type Config struct {
 	LogLevel string
 	// LogFormat controls output format: "json"|"text".
 	LogFormat string
+
+	// ExternalAuthServiceAccounts is a colon-separated allowlist of ServiceAccount
+	// names available for externalAuthRef.mode=serviceAccount (for a future GUI
+	// query endpoint — not yet exposed via any route).
+	ExternalAuthServiceAccounts string
+	// ExternalAuthOIDCSecrets is a colon-separated allowlist of Secret names
+	// available for externalAuthRef.mode=oidc (same caveat as above).
+	ExternalAuthOIDCSecrets string
 }
 
 // Server is the REST API HTTP server.

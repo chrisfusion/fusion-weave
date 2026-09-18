@@ -183,6 +183,42 @@ type WeaveSharedStorageSpec struct {
 	StorageClassName *string `json:"storageClassName,omitempty"`
 }
 
+// WeaveExternalAuthMode selects which deploy-time allowlist a WeaveExternalAuthRef.Name
+// is validated against.
+// +kubebuilder:validation:Enum=serviceAccount;oidc
+type WeaveExternalAuthMode string
+
+const (
+	// ExternalAuthModeServiceAccount mints a Kubernetes ServiceAccount token via
+	// the TokenRequest API for the named, allowlisted ServiceAccount.
+	ExternalAuthModeServiceAccount WeaveExternalAuthMode = "serviceAccount"
+	// ExternalAuthModeOIDC mints a Keycloak access token via the client_credentials
+	// grant, using the named, allowlisted Secret's client id/secret.
+	ExternalAuthModeOIDC WeaveExternalAuthMode = "oidc"
+)
+
+// WeaveExternalAuthRef names a deploy-time-allowlisted identity the operator mints
+// a short-lived token for on behalf of every Job-kind step container in a run,
+// without ever exposing the underlying long-lived credential (a ServiceAccount's
+// impersonation rights, or a Keycloak client secret) to the job's own code. The
+// token is delivered as a mounted file (always) and, when UnsafeEnvironmentInjector
+// resolves true, also as the WEAVE_EXTERNAL_AUTH_TOKEN env var. Independent of and
+// unrelated to AuthSecretRef — both may be set on the same chain simultaneously.
+// Not supported for Deploy-kind steps.
+type WeaveExternalAuthRef struct {
+	// Mode selects which deploy-time allowlist Name is validated against:
+	// "serviceAccount" (helm externalAuth.serviceAccounts) or "oidc" (helm
+	// externalAuth.oidcSecrets).
+	Mode WeaveExternalAuthMode `json:"mode"`
+
+	// Name must match an entry in the allowlist for Mode. For serviceAccount mode
+	// this is the ServiceAccount name the operator mints a TokenRequest token for.
+	// For oidc mode this is the name of the Secret holding Keycloak client
+	// credentials the operator uses for a client_credentials grant.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
 // WeaveChainSpec defines the DAG topology and execution policy.
 type WeaveChainSpec struct {
 	// Steps is the list of DAG nodes. At least one step is required.
@@ -211,6 +247,24 @@ type WeaveChainSpec struct {
 	// (WeaveRunSpec.AuthSecretRefOverride).
 	// +optional
 	AuthSecretRef *corev1.LocalObjectReference `json:"authSecretRef,omitempty"`
+
+	// ExternalAuthRef optionally names a deploy-time-allowlisted external identity
+	// (see WeaveExternalAuthRef) the operator mints a short-lived token for and
+	// injects into every Job-kind step pod of this chain (never Deploy-kind).
+	// Independent of AuthSecretRef — both may be set together. Overridable
+	// per-trigger (WeaveTriggerSpec.ExternalAuthRefOverride) or per-run
+	// (WeaveRunSpec.ExternalAuthRefOverride).
+	// +optional
+	ExternalAuthRef *WeaveExternalAuthRef `json:"externalAuthRef,omitempty"`
+
+	// UnsafeEnvironmentInjector controls whether AuthSecretRef and ExternalAuthRef
+	// are ALSO injected as environment variables, on top of the always-unconditional
+	// file mounts both mechanisms provide. Defaults to true when nil, so existing
+	// chains relying on AuthSecretRef's envFrom behavior are unaffected. Overridable
+	// per-trigger (WeaveTriggerSpec.UnsafeEnvironmentInjectorOverride) or per-run
+	// (WeaveRunSpec.UnsafeEnvironmentInjectorOverride).
+	// +optional
+	UnsafeEnvironmentInjector *bool `json:"unsafeEnvironmentInjector,omitempty"`
 }
 
 // WeaveChainStatus reflects validation results for the chain.

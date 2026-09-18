@@ -87,6 +87,32 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              externalAuthRefOverride:
+                description: |-
+                  ExternalAuthRefOverride overrides WeaveChainSpec.ExternalAuthRef (and any
+                  WeaveTriggerSpec.ExternalAuthRefOverride) for this run only.
+                properties:
+                  mode:
+                    description: |-
+                      Mode selects which deploy-time allowlist Name is validated against:
+                      "serviceAccount" (helm externalAuth.serviceAccounts) or "oidc" (helm
+                      externalAuth.oidcSecrets).
+                    enum:
+                    - serviceAccount
+                    - oidc
+                    type: string
+                  name:
+                    description: |-
+                      Name must match an entry in the allowlist for Mode. For serviceAccount mode
+                      this is the ServiceAccount name the operator mints a TokenRequest token for.
+                      For oidc mode this is the name of the Secret holding Keycloak client
+                      credentials the operator uses for a client_credentials grant.
+                    minLength: 1
+                    type: string
+                required:
+                - mode
+                - name
+                type: object
               parameterOverrides:
                 description: |-
                   ParameterOverrides are injected as extra environment variables into all
@@ -272,6 +298,11 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              unsafeEnvironmentInjectorOverride:
+                description: |-
+                  UnsafeEnvironmentInjectorOverride overrides WeaveChainSpec.UnsafeEnvironmentInjector
+                  (and any WeaveTriggerSpec.UnsafeEnvironmentInjectorOverride) for this run only.
+                type: boolean
             required:
             - chainRef
             type: object

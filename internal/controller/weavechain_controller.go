@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +56,12 @@ type WeaveChainReconciler struct {
 	// CodeSourcePollInterval controls how often the controller checks fusion-index
 	// for tag changes on deploy steps with codeSource. Defaults to 60s.
 	CodeSourcePollInterval time.Duration
+	// ExternalAuthServiceAccounts is the deploy-time allowlist of ServiceAccount
+	// names usable with WeaveExternalAuthRef{Mode: serviceAccount}.
+	ExternalAuthServiceAccounts []string
+	// ExternalAuthOIDCSecrets is the deploy-time allowlist of Secret names usable
+	// with WeaveExternalAuthRef{Mode: oidc}.
+	ExternalAuthOIDCSecrets []string
 }
 
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weavechains,verbs=get;list;watch;create;update;patch;delete
@@ -204,6 +211,23 @@ func (r *WeaveChainReconciler) validateChain(ctx context.Context, chain *weavev1
 	if chain.Spec.SharedStorage != nil {
 		if _, err := resource.ParseQuantity(chain.Spec.SharedStorage.Size); err != nil {
 			return false, fmt.Sprintf("sharedStorage.size %q is not a valid resource quantity: %v", chain.Spec.SharedStorage.Size, err)
+		}
+	}
+
+	// Validate the external-auth reference against the deploy-time allowlist for its mode.
+	if chain.Spec.ExternalAuthRef != nil {
+		ref := chain.Spec.ExternalAuthRef
+		var allowed []string
+		switch ref.Mode {
+		case weavev1alpha1.ExternalAuthModeServiceAccount:
+			allowed = r.ExternalAuthServiceAccounts
+		case weavev1alpha1.ExternalAuthModeOIDC:
+			allowed = r.ExternalAuthOIDCSecrets
+		default:
+			return false, fmt.Sprintf("externalAuthRef.mode %q must be serviceAccount or oidc", ref.Mode)
+		}
+		if !slices.Contains(allowed, ref.Name) {
+			return false, fmt.Sprintf("externalAuthRef.name %q is not in the configured allowlist for mode %q", ref.Name, ref.Mode)
 		}
 	}
 

@@ -204,6 +204,32 @@ codeSource:
     - /home/nonroot
     - /weave-work
 
+# External auth configuration.
+# Deploy-time allowlists for WeaveChainSpec.externalAuthRef (and its trigger/run
+# overrides) — the maintainer creates the actual ServiceAccounts/Secrets manually
+# per cluster instance; the operator only validates references against these
+# lists and mints short-lived tokens, it never manages their lifecycle.
+externalAuth:
+  # serviceAccounts lists up to 5 ServiceAccount names usable with
+  # externalAuthRef.mode: serviceAccount. Maps to EXTERNAL_AUTH_SERVICE_ACCOUNTS.
+  serviceAccounts: []
+  # oidcSecrets lists up to 5 Secret names usable with externalAuthRef.mode: oidc.
+  # Each named Secret must exist in the operator's namespace with keys "clientId",
+  # "clientSecret", "tokenURL" (Keycloak client_credentials grant details). Maps
+  # to EXTERNAL_AUTH_OIDC_SECRETS.
+  oidcSecrets: []
+  # defaultTokenTTL is the fallback minted-token lifetime (Go duration string)
+  # used when the step's WeaveJobTemplate has no activeDeadlineSeconds set. Purely
+  # a leak-exposure-window control — has no effect on job success/failure. Maps to
+  # EXTERNAL_AUTH_DEFAULT_TTL. Only actually enforced for mode: serviceAccount
+  # (OIDC token lifetime is governed by the Keycloak client's own configured
+  # Access Token Lifespan, not by this value).
+  defaultTokenTTL: "5m"
+  # aud claim set on every minted ServiceAccount token (mode: serviceAccount only).
+  # Change this if the external service validates a different expected audience.
+  # Maps to EXTERNAL_AUTH_SA_AUDIENCE.
+  saAudience: "fusion"
+
 # Ingress hostname configuration.
 ingress:
   # hostSuffix is the cluster-wide domain suffix appended to every ingress

@@ -115,6 +115,33 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              externalAuthRefOverride:
+                description: |-
+                  ExternalAuthRefOverride overrides WeaveChainSpec.ExternalAuthRef for every
+                  run created by this trigger. Takes precedence over the chain default;
+                  yields to WeaveRunSpec.ExternalAuthRefOverride on the resulting run.
+                properties:
+                  mode:
+                    description: |-
+                      Mode selects which deploy-time allowlist Name is validated against:
+                      "serviceAccount" (helm externalAuth.serviceAccounts) or "oidc" (helm
+                      externalAuth.oidcSecrets).
+                    enum:
+                    - serviceAccount
+                    - oidc
+                    type: string
+                  name:
+                    description: |-
+                      Name must match an entry in the allowlist for Mode. For serviceAccount mode
+                      this is the ServiceAccount name the operator mints a TokenRequest token for.
+                      For oidc mode this is the name of the Secret holding Keycloak client
+                      credentials the operator uses for a client_credentials grant.
+                    minLength: 1
+                    type: string
+                required:
+                - mode
+                - name
+                type: object
               kafka:
                 description: Kafka configures the Kafka consumer (only used when Type=Kafka).
                 properties:
@@ -310,6 +337,13 @@ spec:
                 - BatchCron
                 - Kafka
                 type: string
+              unsafeEnvironmentInjectorOverride:
+                description: |-
+                  UnsafeEnvironmentInjectorOverride overrides WeaveChainSpec.UnsafeEnvironmentInjector
+                  for every run created by this trigger. Takes precedence over the chain
+                  default; yields to WeaveRunSpec.UnsafeEnvironmentInjectorOverride on the
+                  resulting run.
+                type: boolean
               webhook:
                 description: Webhook configures the HTTP endpoint (only used when
                   Type=Webhook).

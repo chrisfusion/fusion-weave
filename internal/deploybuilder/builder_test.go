@@ -51,7 +51,7 @@ func envVar(env []corev1.EnvVar, name string) (string, bool) {
 
 func TestBuild_NoCodeSource_NoInitContainers(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "", true)
 	if len(deploy.Spec.Template.Spec.InitContainers) != 0 {
 		t.Errorf("expected no init containers without codeSource, got %d", len(deploy.Spec.Template.Spec.InitContainers))
 	}
@@ -63,7 +63,7 @@ func TestBuild_NoCodeSource_NoInitContainers(t *testing.T) {
 
 func TestBuild_AuthSecretName_SetsEnvFrom(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "my-auth-secret")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "my-auth-secret", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	if len(c.EnvFrom) != 1 || c.EnvFrom[0].SecretRef == nil || c.EnvFrom[0].SecretRef.Name != "my-auth-secret" {
 		t.Errorf("expected envFrom secretRef my-auth-secret, got %+v", c.EnvFrom)
@@ -72,7 +72,7 @@ func TestBuild_AuthSecretName_SetsEnvFrom(t *testing.T) {
 
 func TestBuild_EmptyAuthSecretName_NoEnvFrom(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	if len(c.EnvFrom) != 0 {
 		t.Errorf("expected no envFrom when authSecretName is empty, got %+v", c.EnvFrom)
@@ -83,8 +83,7 @@ func TestBuildFromOverride_AuthSecretName_SetsEnvFrom(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), nil,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "my-auth-secret",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "my-auth-secret", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	if len(c.EnvFrom) != 1 || c.EnvFrom[0].SecretRef == nil || c.EnvFrom[0].SecretRef.Name != "my-auth-secret" {
 		t.Errorf("expected envFrom secretRef my-auth-secret, got %+v", c.EnvFrom)
@@ -100,7 +99,7 @@ func TestBuild_NilMeta_WithCodeSource_BaseVarsOnly(t *testing.T) {
 		ArtifactName: "org.myteam.myapp",
 		Tag:          "stable",
 	}
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "1.0.0", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 
 	if v, ok := envVar(c.Env, "WEAVE_ARTIFACT"); !ok || v != "org.myteam.myapp" {
@@ -132,7 +131,7 @@ func TestBuild_MetaPort_SetsEnvVar_DoesNotOverrideContainerPorts(t *testing.T) {
 	meta := &indexclient.AppMetadata{
 		Runner: indexclient.AppRunner{Port: 8080},
 	}
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, meta, "1.0.0", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, meta, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 
 	if v, ok := envVar(c.Env, "WEAVE_PORT"); !ok || v != "8080" {
@@ -148,7 +147,7 @@ func TestBuild_EmptyImage_PassesThrough(t *testing.T) {
 	// Builder does not validate the image; empty string is passed to the container
 	// spec as-is. Kubelet will reject the pod, but the builder does not error.
 	tmpl := minTmpl("")
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "", true)
 	if c := deploy.Spec.Template.Spec.Containers[0]; c.Image != "" {
 		t.Errorf("expected empty image to pass through, got %q", c.Image)
 	}
@@ -158,7 +157,7 @@ func TestBuild_NoCommand_ContainerCommandIsNil(t *testing.T) {
 	// No Command in template is valid — container uses its own entrypoint.
 	// Builder must not inject a default command.
 	tmpl := minTmpl("myrepo/myapp:1.0")
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "", true)
 	if c := deploy.Spec.Template.Spec.Containers[0]; len(c.Command) != 0 {
 		t.Errorf("expected nil command when not set in template, got %v", c.Command)
 	}
@@ -167,7 +166,7 @@ func TestBuild_NoCommand_ContainerCommandIsNil(t *testing.T) {
 func TestBuild_DefaultReplicas(t *testing.T) {
 	// Replicas==0 (zero value) must default to 1.
 	tmpl := minTmpl("myrepo/myapp:1.0")
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "", true)
 	if *deploy.Spec.Replicas != 1 {
 		t.Errorf("expected default replicas=1, got %d", *deploy.Spec.Replicas)
 	}
@@ -181,7 +180,7 @@ func TestBuild_CodeSource_DefaultMountPath(t *testing.T) {
 		Tag:          "stable",
 		// MountPath deliberately empty
 	}
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "", true)
 	inits := deploy.Spec.Template.Spec.InitContainers
 	if len(inits) != 1 {
 		t.Fatalf("expected 1 init container, got %d", len(inits))
@@ -195,7 +194,7 @@ func TestBuild_MetaRunnerType_SetsEnvVar(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	tmpl.Spec.CodeSource = &weavev1alpha1.CodeSourceSpec{ArtifactName: "org.app", Tag: "stable"}
 	meta := &indexclient.AppMetadata{Runner: indexclient.AppRunner{Type: "python"}}
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, meta, "", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, meta, "", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	if v, ok := envVar(c.Env, "WEAVE_RUNNER_TYPE"); !ok || v != "python" {
 		t.Errorf("WEAVE_RUNNER_TYPE: got %q (found=%v)", v, ok)
@@ -207,7 +206,7 @@ func TestBuild_EmptyRunnerType_EnvVarAbsent(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	tmpl.Spec.CodeSource = &weavev1alpha1.CodeSourceSpec{ArtifactName: "org.app", Tag: "stable"}
 	meta := &indexclient.AppMetadata{Runner: indexclient.AppRunner{Type: ""}}
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, meta, "", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, meta, "", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	if _, ok := envVar(c.Env, "WEAVE_RUNNER_TYPE"); ok {
 		t.Error("WEAVE_RUNNER_TYPE must not be set when runner.type is empty")
@@ -224,8 +223,7 @@ func TestBuildFromOverride_MetaPort_OverridesTemplatePorts(t *testing.T) {
 	}
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), meta,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	if len(c.Ports) != 1 || c.Ports[0].ContainerPort != 8080 {
 		t.Errorf("expected container port 8080 from metadata, got %+v", c.Ports)
@@ -241,8 +239,7 @@ func TestBuildFromOverride_MetaPortZero_UsesTemplatePorts(t *testing.T) {
 	meta := &indexclient.AppMetadata{Runner: indexclient.AppRunner{Port: 0}}
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), meta,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	if len(c.Ports) != 1 || c.Ports[0].ContainerPort != 9000 {
 		t.Errorf("expected template port 9000 when meta.Port==0, got %+v", c.Ports)
@@ -269,8 +266,7 @@ func TestBuildFromOverride_MetaResources_OverridesTemplate(t *testing.T) {
 	}
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), meta,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	want := resource.MustParse("200m")
 	if got := c.Resources.Requests[corev1.ResourceCPU]; got.Cmp(want) != 0 {
@@ -289,8 +285,7 @@ func TestBuildFromOverride_EmptyMetaResources_UsesTemplate(t *testing.T) {
 	meta := &indexclient.AppMetadata{} // zero Resources
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), meta,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	want := resource.MustParse("50m")
 	if got := c.Resources.Requests[corev1.ResourceCPU]; got.Cmp(want) != 0 {
@@ -307,8 +302,7 @@ func TestBuildFromOverride_NilMeta_UsesTemplate(t *testing.T) {
 	}
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), nil,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	want := resource.MustParse("50m")
 	if got := c.Resources.Requests[corev1.ResourceCPU]; got.Cmp(want) != 0 {
@@ -326,8 +320,7 @@ func TestBuildFromOverride_EmptyImage_PassesThrough(t *testing.T) {
 	tmpl := minTmpl("")
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), nil,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	if c := deploy.Spec.Template.Spec.Containers[0]; c.Image != "" {
 		t.Errorf("expected empty image to pass through, got %q", c.Image)
 	}
@@ -338,8 +331,7 @@ func TestBuildFromOverride_NoCommand_ContainerCommandIsNil(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), nil,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	if len(c.Command) != 0 {
 		t.Errorf("expected nil command when not set in template, got %v", c.Command)
@@ -361,8 +353,7 @@ func TestBuildFromOverride_RunnerArgs_InjectedAsEnvVars(t *testing.T) {
 	}
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), meta,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	if v, ok := envVar(c.Env, "LOG_LEVEL"); !ok || v != "debug" {
 		t.Errorf("LOG_LEVEL: got %q (found=%v)", v, ok)
@@ -377,8 +368,7 @@ func TestBuildFromOverride_NoRunnerArgs_NoExtraEnvVars(t *testing.T) {
 	meta := &indexclient.AppMetadata{Runner: indexclient.AppRunner{Port: 8080}}
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), meta,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	// Env must only contain the standard WEAVE_* vars, no extras.
 	known := map[string]bool{
@@ -594,8 +584,7 @@ func TestBuildFromOverride_RunnerArgsDuplicateEnvVar(t *testing.T) {
 	}
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), meta,
-		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "",
-	)
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", true)
 	c := deploy.Spec.Template.Spec.Containers[0]
 	count := 0
 	for _, e := range c.Env {
@@ -656,10 +645,11 @@ func TestBuildFromOverride_LoaderImage_TemplateWins(t *testing.T) {
 		Tag:          "stable",
 		LoaderImage:  "custom-loader:1.0",
 	}
+	// defaultLoaderImage should be ignored since the template sets its own.
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), nil,
 		"run1", "step1", "fusion", security.Defaults{}, "1.0.0",
-		"", "other-default:1.0", nil, "", // defaultLoaderImage should be ignored
+		"", "other-default:1.0", nil, "", true,
 	)
 	inits := deploy.Spec.Template.Spec.InitContainers
 	if len(inits) == 0 {
@@ -676,8 +666,7 @@ func TestBuildFromOverride_LoaderImage_DefaultUsedWhenTemplateAbsent(t *testing.
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), nil,
 		"run1", "step1", "fusion", security.Defaults{}, "1.0.0",
-		"", "my-default:2.0", nil, "",
-	)
+		"", "my-default:2.0", nil, "", true)
 	inits := deploy.Spec.Template.Spec.InitContainers
 	if len(inits) == 0 {
 		t.Fatal("expected init container")
@@ -691,10 +680,11 @@ func TestBuildFromOverride_LoaderImage_HardcodedFallback(t *testing.T) {
 	// When both template LoaderImage and defaultLoaderImage are empty, fall back
 	// to the hardcoded "fusion-code-loader:latest".
 	tmpl := minTmpl("myrepo/myapp:1.0") // no CodeSource
+	// both loaderImage sources empty
 	deploy := deploybuilder.BuildFromOverride(
 		tmpl, minOverride("org.myapp", "stable"), nil,
 		"run1", "step1", "fusion", security.Defaults{}, "1.0.0",
-		"", "", nil, "", // both empty
+		"", "", nil, "", true,
 	)
 	inits := deploy.Spec.Template.Spec.InitContainers
 	if len(inits) == 0 {
@@ -854,7 +844,7 @@ func TestBuild_WritablePaths_MountsEmptyDirsInBothContainers(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	tmpl.Spec.CodeSource = &weavev1alpha1.CodeSourceSpec{ArtifactName: "org.app", Tag: "stable"}
 	paths := []string{"/tmp", "/home/nonroot", "/weave-work"}
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", paths, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", paths, "", true)
 
 	// Check volumes exist for each writable path.
 	volNames := map[string]bool{}
@@ -893,7 +883,7 @@ func TestBuild_WritablePaths_MountsEmptyDirsInBothContainers(t *testing.T) {
 func TestBuild_NilWritablePaths_NoExtraVolumes(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	tmpl.Spec.CodeSource = &weavev1alpha1.CodeSourceSpec{ArtifactName: "org.app", Tag: "stable"}
-	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "", true)
 
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
 		if v.Name != "weave-code" && strings.HasPrefix(v.Name, "weave-w") {
@@ -907,7 +897,7 @@ func TestBuild_WritablePaths_SanitizesName(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	tmpl.Spec.CodeSource = &weavev1alpha1.CodeSourceSpec{ArtifactName: "org.app", Tag: "stable"}
 	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "",
-		[]string{"/My_Path", "/var/log.d"}, "")
+		[]string{"/My_Path", "/var/log.d"}, "", true)
 
 	volNames := map[string]bool{}
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
@@ -926,7 +916,7 @@ func TestBuild_WritablePaths_DeduplicatesCollisions(t *testing.T) {
 	tmpl := minTmpl("myrepo/myapp:1.0")
 	tmpl.Spec.CodeSource = &weavev1alpha1.CodeSourceSpec{ArtifactName: "org.app", Tag: "stable"}
 	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "",
-		[]string{"/a-b", "/a/b"}, "")
+		[]string{"/a-b", "/a/b"}, "", true)
 
 	count := 0
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
@@ -945,7 +935,7 @@ func TestBuild_WritablePaths_SkipsUserVolumeCollision(t *testing.T) {
 	tmpl.Spec.CodeSource = &weavev1alpha1.CodeSourceSpec{ArtifactName: "org.app", Tag: "stable"}
 	tmpl.Spec.Volumes = []weavev1alpha1.WeaveVolumeMount{{Name: "weave-w-tmp", SecretName: "some-secret", MountPath: "/secret"}}
 	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "",
-		[]string{"/tmp"}, "")
+		[]string{"/tmp"}, "", true)
 
 	count := 0
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
@@ -955,5 +945,80 @@ func TestBuild_WritablePaths_SkipsUserVolumeCollision(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected exactly 1 volume weave-w-tmp (user-defined, not duplicated), got %d", count)
+	}
+}
+
+// ---- AuthSecretRef file mount + UnsafeEnvironmentInjector ----
+
+func hasVolume(volumes []corev1.Volume, name string) bool {
+	for _, v := range volumes {
+		if v.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMount(mounts []corev1.VolumeMount, name string) bool {
+	for _, m := range mounts {
+		if m.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBuild_AuthSecretName_UnsafeInjectorFalse_NoEnvFromButFileMounted(t *testing.T) {
+	tmpl := minTmpl("myrepo/myapp:1.0")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "my-auth-secret", false)
+	c := deploy.Spec.Template.Spec.Containers[0]
+	if len(c.EnvFrom) != 0 {
+		t.Errorf("expected no envFrom when unsafeEnvironmentInjector is false, got %+v", c.EnvFrom)
+	}
+	if !hasVolume(deploy.Spec.Template.Spec.Volumes, "weave-auth-secret") || !hasMount(c.VolumeMounts, "weave-auth-secret") {
+		t.Error("expected weave-auth-secret volume/mount regardless of unsafeEnvironmentInjector")
+	}
+	if v, ok := envVar(c.Env, "WEAVE_AUTH_SECRET_DIR"); !ok || v != "/var/run/secrets/fusion-platform.io/auth-secret" {
+		t.Errorf("WEAVE_AUTH_SECRET_DIR: got %q (found=%v)", v, ok)
+	}
+}
+
+func TestBuild_AuthSecretName_UnsafeInjectorTrue_FileStillMounted(t *testing.T) {
+	tmpl := minTmpl("myrepo/myapp:1.0")
+	deploy := deploybuilder.Build(tmpl, "chain", "step", "fusion", security.Defaults{}, nil, "", "", "", nil, "my-auth-secret", true)
+	c := deploy.Spec.Template.Spec.Containers[0]
+	if len(c.EnvFrom) != 1 {
+		t.Errorf("expected envFrom set when unsafeEnvironmentInjector is true, got %+v", c.EnvFrom)
+	}
+	if !hasVolume(deploy.Spec.Template.Spec.Volumes, "weave-auth-secret") {
+		t.Error("expected weave-auth-secret volume even when envFrom is also set")
+	}
+}
+
+func TestBuildFromOverride_AuthSecretName_UnsafeInjectorFalse_NoEnvFromButFileMounted(t *testing.T) {
+	tmpl := minTmpl("myrepo/myapp:1.0")
+	deploy := deploybuilder.BuildFromOverride(
+		tmpl, minOverride("org.myapp", "stable"), nil,
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "my-auth-secret", false)
+	c := deploy.Spec.Template.Spec.Containers[0]
+	if len(c.EnvFrom) != 0 {
+		t.Errorf("expected no envFrom when unsafeEnvironmentInjector is false, got %+v", c.EnvFrom)
+	}
+	if !hasVolume(deploy.Spec.Template.Spec.Volumes, "weave-auth-secret") || !hasMount(c.VolumeMounts, "weave-auth-secret") {
+		t.Error("expected weave-auth-secret volume/mount regardless of unsafeEnvironmentInjector")
+	}
+}
+
+func TestBuildFromOverride_AuthSecretName_UnsafeInjectorTrue_FileStillMounted(t *testing.T) {
+	tmpl := minTmpl("myrepo/myapp:1.0")
+	deploy := deploybuilder.BuildFromOverride(
+		tmpl, minOverride("org.myapp", "stable"), nil,
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "my-auth-secret", true)
+	c := deploy.Spec.Template.Spec.Containers[0]
+	if len(c.EnvFrom) != 1 {
+		t.Errorf("expected envFrom set when unsafeEnvironmentInjector is true, got %+v", c.EnvFrom)
+	}
+	if !hasVolume(deploy.Spec.Template.Spec.Volumes, "weave-auth-secret") {
+		t.Error("expected weave-auth-secret volume even when envFrom is also set")
 	}
 }

@@ -158,10 +158,40 @@ func main() {
 			}
 		}
 	}
+
+	var externalAuthServiceAccounts []string
+	if v := os.Getenv("EXTERNAL_AUTH_SERVICE_ACCOUNTS"); v != "" {
+		for _, n := range strings.Split(v, ":") {
+			if n = strings.TrimSpace(n); n != "" {
+				externalAuthServiceAccounts = append(externalAuthServiceAccounts, n)
+			}
+		}
+	}
+	var externalAuthOIDCSecrets []string
+	if v := os.Getenv("EXTERNAL_AUTH_OIDC_SECRETS"); v != "" {
+		for _, n := range strings.Split(v, ":") {
+			if n = strings.TrimSpace(n); n != "" {
+				externalAuthOIDCSecrets = append(externalAuthOIDCSecrets, n)
+			}
+		}
+	}
+	externalAuthDefaultTTL := 5 * time.Minute
+	if v := os.Getenv("EXTERNAL_AUTH_DEFAULT_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			externalAuthDefaultTTL = d
+		}
+	}
+	externalAuthSAAudience := "fusion"
+	if v := os.Getenv("EXTERNAL_AUTH_SA_AUDIENCE"); v != "" {
+		externalAuthSAAudience = v
+	}
+
 	if err := (&controller.WeaveChainReconciler{
-		Client:                 mgr.GetClient(),
-		Scheme:                 mgr.GetScheme(),
-		CodeSourcePollInterval: codePollInterval,
+		Client:                      mgr.GetClient(),
+		Scheme:                      mgr.GetScheme(),
+		CodeSourcePollInterval:      codePollInterval,
+		ExternalAuthServiceAccounts: externalAuthServiceAccounts,
+		ExternalAuthOIDCSecrets:     externalAuthOIDCSecrets,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveChain controller")
 		os.Exit(1)
@@ -186,15 +216,19 @@ func main() {
 	}
 
 	if err := (&controller.WeaveRunReconciler{
-		Client:                 mgr.GetClient(),
-		Scheme:                 mgr.GetScheme(),
-		KubeClient:             kubeClient,
-		SecurityDefaults:       securityDefaults,
-		CodeSourcePollInterval: codePollInterval,
-		FusionIndexURL:         fusionIndexURL,
-		LoaderImage:            loaderImage,
-		WritablePaths:          writablePaths,
-		IngressHostSuffix:      ingressHostSuffix,
+		Client:                      mgr.GetClient(),
+		Scheme:                      mgr.GetScheme(),
+		KubeClient:                  kubeClient,
+		SecurityDefaults:            securityDefaults,
+		CodeSourcePollInterval:      codePollInterval,
+		FusionIndexURL:              fusionIndexURL,
+		LoaderImage:                 loaderImage,
+		WritablePaths:               writablePaths,
+		IngressHostSuffix:           ingressHostSuffix,
+		ExternalAuthServiceAccounts: externalAuthServiceAccounts,
+		ExternalAuthOIDCSecrets:     externalAuthOIDCSecrets,
+		ExternalAuthDefaultTTL:      externalAuthDefaultTTL,
+		ExternalAuthSAAudience:      externalAuthSAAudience,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to set up WeaveRun controller")
 		os.Exit(1)

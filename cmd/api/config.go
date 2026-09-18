@@ -38,6 +38,9 @@ func configFromFlags() apiserver.Config {
 	flag.StringVar(&cfg.LogLevel, "log-level", envOrDefault("LOG_LEVEL", "info"), "Log level: debug|info|warn|error.")
 	flag.StringVar(&cfg.LogFormat, "log-format", envOrDefault("LOG_FORMAT", "json"), "Log format: json|text.")
 
+	flag.StringVar(&cfg.ExternalAuthServiceAccounts, "external-auth-service-accounts", os.Getenv("EXTERNAL_AUTH_SERVICE_ACCOUNTS"), "Colon-separated allowlist of ServiceAccount names for externalAuthRef (config-only, no query endpoint yet).")
+	flag.StringVar(&cfg.ExternalAuthOIDCSecrets, "external-auth-oidc-secrets", os.Getenv("EXTERNAL_AUTH_OIDC_SECRETS"), "Colon-separated allowlist of Secret names for externalAuthRef (config-only, no query endpoint yet).")
+
 	return cfg
 }
 

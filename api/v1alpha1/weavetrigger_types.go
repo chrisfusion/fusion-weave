@@ -115,6 +115,19 @@ type WeaveTriggerSpec struct {
 	// +optional
 	AuthSecretRefOverride *corev1.LocalObjectReference `json:"authSecretRefOverride,omitempty"`
 
+	// ExternalAuthRefOverride overrides WeaveChainSpec.ExternalAuthRef for every
+	// run created by this trigger. Takes precedence over the chain default;
+	// yields to WeaveRunSpec.ExternalAuthRefOverride on the resulting run.
+	// +optional
+	ExternalAuthRefOverride *WeaveExternalAuthRef `json:"externalAuthRefOverride,omitempty"`
+
+	// UnsafeEnvironmentInjectorOverride overrides WeaveChainSpec.UnsafeEnvironmentInjector
+	// for every run created by this trigger. Takes precedence over the chain
+	// default; yields to WeaveRunSpec.UnsafeEnvironmentInjectorOverride on the
+	// resulting run.
+	// +optional
+	UnsafeEnvironmentInjectorOverride *bool `json:"unsafeEnvironmentInjectorOverride,omitempty"`
+
 	// ParameterOverrides are environment variables injected into every WeaveRun
 	// created by this trigger, merged on top of per-step env vars.
 	// +optional
