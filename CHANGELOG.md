@@ -7,6 +7,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Operator pod memory limit raised 128Mi→512Mi (request 64Mi→128Mi) in `deployment/fusion-weave/values.yaml` and `config/manager/manager.yaml` — controller-runtime's watch cache holds every WeaveRun/Job/ConfigMap/Deployment/WeaveChain/etc. in the reconciled namespace in memory, and a long-lived dev namespace with thousands of accumulated terminal WeaveRuns/Jobs OOMKilled the operator (exit 137) within seconds of every startup, crashlooping indefinitely.
+
 ### Added
 - Every `WeaveChain`/`WeaveJobTemplate`/`WeaveTrigger`/`WeaveRun`/`WeaveServiceTemplate`/batch- and Kafka-trigger created via the API now gets `fusion-platform.io/managed-by: manual` on its `ObjectMeta` unless the caller already set that label (e.g. `fusion-wizard` sends `wizard` explicitly). Lets a client answer "is this hand-managed or owned by something else" from a bare `kubectl get -o yaml`, without knowing which caller (if any) owns it. `handlers.defaultManagedByManual`, one shared helper in `base.go` called from each `Create` handler.
 
