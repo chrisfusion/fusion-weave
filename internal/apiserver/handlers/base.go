@@ -32,6 +32,26 @@ type base struct {
 	namespace string
 }
 
+const (
+	// labelManagedBy marks who manages a resource. Create handlers default it to "manual" when
+	// the caller didn't set one (e.g. fusion-wizard sends "wizard" explicitly, left untouched).
+	labelManagedBy  = "fusion-platform.io/managed-by"
+	managedByManual = "manual"
+)
+
+// defaultManagedByManual stamps labelManagedBy: manual onto obj unless the caller already claimed
+// it, so anything created through this API without an explicit owner is clearly hand-managed.
+func defaultManagedByManual(obj client.Object) {
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	if labels[labelManagedBy] == "" {
+		labels[labelManagedBy] = managedByManual
+	}
+	obj.SetLabels(labels)
+}
+
 // writeJSON encodes v as JSON with the given status code.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

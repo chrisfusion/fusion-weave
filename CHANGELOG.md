@@ -7,6 +7,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- Every `WeaveChain`/`WeaveJobTemplate`/`WeaveTrigger`/`WeaveRun`/`WeaveServiceTemplate`/batch- and Kafka-trigger created via the API now gets `fusion-platform.io/managed-by: manual` on its `ObjectMeta` unless the caller already set that label (e.g. `fusion-wizard` sends `wizard` explicitly). Lets a client answer "is this hand-managed or owned by something else" from a bare `kubectl get -o yaml`, without knowing which caller (if any) owns it. `handlers.defaultManagedByManual`, one shared helper in `base.go` called from each `Create` handler.
+
 ## [0.5.0] — 2026-09-18
 
 ### Added

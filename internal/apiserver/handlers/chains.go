@@ -37,6 +37,7 @@ func (h *ChainHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	obj.Namespace = h.namespace
+	defaultManagedByManual(&obj)
 	if err := h.client.Create(r.Context(), &obj); err != nil {
 		if errors.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "resource already exists")

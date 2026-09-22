@@ -104,6 +104,7 @@ func (h *BatchTriggerHandler) Create(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	}
+	defaultManagedByManual(ft)
 	if err := h.client.Create(r.Context(), ft); err != nil {
 		if errors.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "resource already exists")
