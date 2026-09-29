@@ -2,11 +2,14 @@
 {{- $apiAuth := $api.auth | default dict -}}
 {{- if and $api.enabled $apiAuth.saAuthEnabled }}
 # SPDX-License-Identifier: GPL-3.0-or-later
-# TokenReview is cluster-scoped and cannot be granted via a namespaced Role.
+# TokenReview is cluster-scoped and cannot be granted via a namespaced Role. Name is qualified by
+# both release name AND release namespace: release name alone collides when two installs of this
+# chart in different namespaces share a release name (e.g. every environment installed as
+# "fusion-weave") - Helm then refuses to let either one manage the other's already-owned object.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ .Release.Name }}-api-tokenreview
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-api-tokenreview
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 rules:

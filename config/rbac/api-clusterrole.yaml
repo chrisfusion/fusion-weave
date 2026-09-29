@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # ClusterRole required for ServiceAccount TokenReview (used when AUTH_SA=true).
-# TokenReview is a cluster-scoped resource and cannot be granted via a namespaced Role.
+# TokenReview is a cluster-scoped resource and cannot be granted via a namespaced Role. Name is
+# qualified by target namespace - a bare "fusion-weave-api-tokenreview" collides with the
+# identically-named ClusterRole every Helm-installed environment of this chart also creates
+# (deployment/fusion-weave/templates/api-clusterrole.yaml), since ClusterRoles are cluster-scoped.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: fusion-weave-api-tokenreview
+  name: fusion-weave-fusion-api-tokenreview
 rules:
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]

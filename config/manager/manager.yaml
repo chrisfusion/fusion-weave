@@ -57,7 +57,7 @@ spec:
             - name: WRITABLE_PATHS
               value: "/tmp:/home/nonroot:/weave-work"
             - name: INGRESS_HOST_SUFFIX
-              value: ""
+              value: "fusion.local"
           resources:
             limits:
               cpu: 500m

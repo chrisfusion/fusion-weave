@@ -3,16 +3,18 @@
 {{- $apiSA := $api.serviceAccount | default dict -}}
 {{- if and $api.enabled $apiAuth.saAuthEnabled }}
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Name qualified by release name AND namespace - see api-clusterrole.yaml for why release name
+# alone isn't unique enough.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ .Release.Name }}-api-tokenreview
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-api-tokenreview
   labels:
     {{- include "fusion-weave.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ .Release.Name }}-api-tokenreview
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-api-tokenreview
 subjects:
   - kind: ServiceAccount
     name: {{ $apiSA.name }}
