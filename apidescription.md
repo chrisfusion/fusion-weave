@@ -679,6 +679,8 @@ Attaches scheduling or external-event firing to a WeaveChain.
 
 **`authSecretRefOverride`**: overrides `WeaveChainSpec.authSecretRef` for every run created by this trigger. Takes precedence over the chain default; yields to `WeaveRunSpec.authSecretRefOverride` on the resulting run.
 
+**`imageOverrides`**: list of `{stepName, image, imagePullPolicy?}` copied into `spec.imageOverrides` of every run this trigger creates — all trigger types (OnDemand, Cron, Webhook, BatchCron, Kafka). Same rules as on a run (explicit non-`latest` tag or digest, `ALLOWED_IMAGE_PREFIXES`; see `WeaveRun`). `POST`/`PUT /api/v1/triggers` return 400 for a malformed list. A trigger cannot set `stepOverrides`, so overrides for **deploy** steps make the created run fail; use job steps only. `PATCH` and kubectl/Flux bypass the API check — the operator validates at run start and fails the run on a bad image. The convenience endpoints `/batchtriggers` and `/kafkatriggers` do not accept this field; set it on the trigger via `/triggers` or `PATCH`.
+
 **Cron trigger** — requires `schedule` (6-field, seconds-first cron expression — `internal/trigger` uses `cron.WithSeconds()`, so this is **not** standard 5-field cron):
 
 ```json

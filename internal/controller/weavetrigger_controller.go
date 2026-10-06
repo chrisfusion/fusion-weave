@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -518,6 +519,7 @@ func (r *WeaveTriggerReconciler) createKafkaRun(
 			ChainRef:           ft.Spec.ChainRef,
 			TriggerRef:         &corev1.LocalObjectReference{Name: ft.Name},
 			ParameterOverrides: merged,
+			ImageOverrides:     slices.Clone(ft.Spec.ImageOverrides),
 		},
 	}
 
@@ -597,6 +599,7 @@ func (r *WeaveTriggerReconciler) createRun(
 			ChainRef:           ft.Spec.ChainRef,
 			TriggerRef:         &corev1.LocalObjectReference{Name: ft.Name},
 			ParameterOverrides: merged,
+			ImageOverrides:     slices.Clone(ft.Spec.ImageOverrides),
 		},
 	}
 
@@ -746,6 +749,7 @@ func (r *WeaveTriggerReconciler) createBatchRun(
 			ChainRef:           ft.Spec.ChainRef,
 			TriggerRef:         &corev1.LocalObjectReference{Name: ft.Name},
 			ParameterOverrides: merged,
+			ImageOverrides:     slices.Clone(ft.Spec.ImageOverrides),
 		},
 	}
 

@@ -46,6 +46,23 @@ func Validate(image string, allowedPrefixes []string) error {
 	return fmt.Errorf("image %q does not match any allowed prefix", image)
 }
 
+// ValidateList checks the chain-independent rules for a list of overrides
+// (shared by the run and trigger API handlers): unique step names and every
+// image passing Validate.
+func ValidateList(overrides []weavev1alpha1.WeaveRunImageOverride, allowedPrefixes []string) error {
+	seen := map[string]bool{}
+	for _, o := range overrides {
+		if seen[o.StepName] {
+			return fmt.Errorf("duplicate image override for step %q", o.StepName)
+		}
+		seen[o.StepName] = true
+		if err := Validate(o.Image, allowedPrefixes); err != nil {
+			return fmt.Errorf("step %q: %w", o.StepName, err)
+		}
+	}
+	return nil
+}
+
 func hasImmutableRef(image string) bool {
 	if strings.Contains(image, "@sha256:") {
 		return true

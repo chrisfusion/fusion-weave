@@ -132,6 +132,15 @@ type WeaveTriggerSpec struct {
 	// created by this trigger, merged on top of per-step env vars.
 	// +optional
 	ParameterOverrides []corev1.EnvVar `json:"parameterOverrides,omitempty"`
+
+	// ImageOverrides is copied into WeaveRunSpec.ImageOverrides of every run
+	// created by this trigger (all trigger types), replacing the container image
+	// of individual job steps. Same rules as on a WeaveRun: explicit non-latest
+	// tag or digest, must match ALLOWED_IMAGE_PREFIXES. Deploy steps need a
+	// run-owned Deployment (stepOverrides), which a trigger cannot set, so
+	// overrides targeting deploy steps make the created run fail.
+	// +optional
+	ImageOverrides []WeaveRunImageOverride `json:"imageOverrides,omitempty"`
 }
 
 // WeaveTriggerStatus reflects the current state of the trigger.

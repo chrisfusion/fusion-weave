@@ -12,13 +12,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/imagepolicy"
 )
 
 // TriggerHandler handles CRUD for WeaveTrigger.
-type TriggerHandler struct{ base }
+type TriggerHandler struct {
+	base
+	allowedImagePrefixes []string
+}
 
-func NewTriggerHandler(c client.Client, namespace string) ResourceHandler {
-	return &TriggerHandler{base{client: c, namespace: namespace}}
+func NewTriggerHandler(c client.Client, namespace string, allowedImagePrefixes []string) ResourceHandler {
+	return &TriggerHandler{base: base{client: c, namespace: namespace}, allowedImagePrefixes: allowedImagePrefixes}
 }
 
 func (h *TriggerHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -34,6 +38,10 @@ func (h *TriggerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var obj weavev1alpha1.WeaveTrigger
 	if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := imagepolicy.ValidateList(obj.Spec.ImageOverrides, h.allowedImagePrefixes); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	obj.Namespace = h.namespace
@@ -70,6 +78,10 @@ func (h *TriggerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var obj weavev1alpha1.WeaveTrigger
 	if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := imagepolicy.ValidateList(obj.Spec.ImageOverrides, h.allowedImagePrefixes); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	obj.Name = name

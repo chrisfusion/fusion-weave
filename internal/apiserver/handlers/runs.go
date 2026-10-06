@@ -5,7 +5,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -32,17 +31,7 @@ func NewRunHandler(c client.Client, namespace string, allowedImagePrefixes []str
 // the operator. PATCH bypasses this check by design (raw merge patch); the
 // operator re-validates before applying any image.
 func (h *RunHandler) validateImageOverrides(run *weavev1alpha1.WeaveRun) error {
-	seen := map[string]bool{}
-	for _, o := range run.Spec.ImageOverrides {
-		if seen[o.StepName] {
-			return fmt.Errorf("duplicate image override for step %q", o.StepName)
-		}
-		seen[o.StepName] = true
-		if err := imagepolicy.Validate(o.Image, h.allowedImagePrefixes); err != nil {
-			return fmt.Errorf("step %q: %w", o.StepName, err)
-		}
-	}
-	return nil
+	return imagepolicy.ValidateList(run.Spec.ImageOverrides, h.allowedImagePrefixes)
 }
 
 func (h *RunHandler) List(w http.ResponseWriter, r *http.Request) {

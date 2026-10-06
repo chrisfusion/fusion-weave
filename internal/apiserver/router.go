@@ -36,8 +36,9 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitori
 		registerCRUD(r, "/jobtemplates", handlers.NewJobTemplateHandler(c, cfg.Namespace))
 		registerCRUD(r, "/servicetemplates", handlers.NewServiceTemplateHandler(c, cfg.Namespace))
 		registerCRUD(r, "/chains", handlers.NewChainHandler(c, cfg.Namespace))
-		registerCRUD(r, "/triggers", handlers.NewTriggerHandler(c, cfg.Namespace))
-		runHandler := handlers.NewRunHandler(c, cfg.Namespace, imagepolicy.ParsePrefixes(cfg.AllowedImagePrefixes))
+		allowedImages := imagepolicy.ParsePrefixes(cfg.AllowedImagePrefixes)
+		registerCRUD(r, "/triggers", handlers.NewTriggerHandler(c, cfg.Namespace, allowedImages))
+		runHandler := handlers.NewRunHandler(c, cfg.Namespace, allowedImages)
 		registerCRUD(r, "/runs", runHandler)
 		r.Post("/runs/{name}/stop", runHandler.(*handlers.RunHandler).Stop)
 
