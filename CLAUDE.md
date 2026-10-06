@@ -32,6 +32,10 @@ Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, Wea
 - `LOG_LEVEL` / `LOG_FORMAT` env vars control the slog handler; wired via `api.log.level` / `api.log.format` in Helm.
 - `internal/monitoring/handlers` intentionally imports `internal/apiserver/middleware` for `LoggerFromCtx` — no import cycle.
 
+## Vendoring (offline builds)
+
+Go dependencies are vendored and committed (`vendor/`, ~69 MB on disk) because the CI environment that builds the images has no internet access (builds must not download anything). The Makefile targets and the Dockerfile use `-mod=vendor` (the Dockerfile has no `go mod download`). After any `go.mod` change run `make vendor` and commit `vendor/` with `go.mod`/`go.sum`; `make check-vendor` fails on drift. `vendor/**` is `-diff linguist-vendored` in `.gitattributes`. `Dockerfile` and `Dockerfile.loader` both build with `-mod=vendor`. `controller-gen` (`make generate`) is not vendored — keep it out of the CI build path. Remaining external inputs: the Docker base images (`golang:1.25-alpine`, `gcr.io/distroless/static:nonroot`) — mirror them in an internal registry or `docker save`/`docker load` them. Outside Docker the pinned Go toolchain must be installed (`GOTOOLCHAIN=local`). Verify with `docker build --network none .`. Blueprint: `docs/go-vendoring-blueprint.md`.
+
 ## Build
 - `go build ./...` — standard build
 - `make generate` — regenerate deepcopy + CRD YAML after changing api/v1alpha1/ types (requires `~/go/bin/controller-gen`)

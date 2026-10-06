@@ -11,8 +11,6 @@
 bin/
 dist/
 
-# Go module cache and vendor
-vendor/
 
 # IDE — VS Code
 .vscode/

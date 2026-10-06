@@ -6,6 +6,8 @@ NAMESPACE ?= fusion
 
 .PHONY: all build test generate manifests docker-build deploy undeploy install-crds
 
+.PHONY: vendor check-vendor
+
 all: generate build
 
 ## Generate deepcopy methods and CRD manifests.
@@ -13,13 +15,24 @@ generate:
 	$(CONTROLLER_GEN) object:headerFile="" paths="./api/..."
 	$(CONTROLLER_GEN) crd paths="./api/..." output:crd:dir=config/crd/bases
 
+## Refresh vendor/ from go.mod (committed so builds work offline).
+vendor:
+	go mod tidy
+	go mod vendor
+
+## Fail when vendor/ drifted from go.mod/go.sum.
+check-vendor:
+	go mod vendor
+	git diff --exit-code -- vendor go.mod go.sum
+	@test -z "$$(git ls-files --others --exclude-standard -- vendor)" || (echo "untracked files in vendor/" && exit 1)
+
 ## Build the operator binary.
 build: generate
-	CGO_ENABLED=0 go build -o bin/manager ./cmd/
+	CGO_ENABLED=0 go build -mod=vendor -o bin/manager ./cmd/
 
 ## Run unit tests.
 test:
-	go test ./... -v
+	go test -mod=vendor ./... -v
 
 ## Build the Docker image and load it directly into minikube.
 docker-build:
