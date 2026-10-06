@@ -227,3 +227,7 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - **`GET /monitor/v1/runs` is the single metrics refresh trigger** — on a cache miss it refreshes all Tier-1 run/step gauges, the `weave_run_duration_seconds` histogram, and Tier-2 chain gauges via `refreshChainMetrics`. No background scrape loop exists.
 - **Histogram deduplication**: `RunsHandler.seenRuns` tracks which terminal runs have been observed in `weave_run_duration_seconds` to prevent double-counting across polling cycles. Any new histogram added to a poll-based handler must use the same pattern.
 - **chi middleware `RoutePattern()` timing**: `chi.RouteContext(r.Context()).RoutePattern()` is only populated *after* `next.ServeHTTP()` returns — read it after the call in `MonitoringMiddleware`.
+
+## Multi-tenancy / ownership
+
+Cross-project plan (owner groups, trusted headers `X-User-Groups` etc., migration, rollout): `../fusion-shared/docs/multi-tenancy.md` — read it before touching ownership, groups or the `X-User-*` headers.
