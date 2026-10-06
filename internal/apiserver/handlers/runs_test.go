@@ -4,12 +4,15 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -65,5 +68,39 @@ func TestRunCreate_NoImageOverrides_NeedsNoPrefixes(t *testing.T) {
 	h := newRunHandlerForTest(t, nil)
 	if w := postRun(t, h, `{"metadata":{"name":"r1"},"spec":{"chainRef":{"name":"c"}}}`); w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRunSetImage(t *testing.T) {
+	h := newRunHandlerForTest(t, []string{"reg.io/cust/"})
+	if w := postRun(t, h, `{"metadata":{"name":"r1"},"spec":{"chainRef":{"name":"c"},"imageOverrides":[{"stepName":"a","image":"reg.io/cust/a:1"}]}}`); w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	do := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r1/image", strings.NewReader(body))
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("name", "r1")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		w := httptest.NewRecorder()
+		h.SetImage(w, req)
+		return w
+	}
+	if w := do(`{"stepName":"a","image":"reg.io/cust/a:2"}`); w.Code != http.StatusOK {
+		t.Fatalf("update existing: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(`{"stepName":"b","image":"reg.io/cust/b:1"}`); w.Code != http.StatusOK {
+		t.Fatalf("add new: %d %s", w.Code, w.Body.String())
+	}
+	var got weavev1alpha1.WeaveRun
+	if err := h.client.Get(context.Background(), types.NamespacedName{Namespace: "fusion", Name: "r1"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Spec.ImageOverrides) != 2 || got.Spec.ImageOverrides[0].Image != "reg.io/cust/a:2" {
+		t.Fatalf("unexpected overrides: %+v", got.Spec.ImageOverrides)
+	}
+	for _, bad := range []string{`{"stepName":"a","image":"reg.io/cust/a:latest"}`, `{"stepName":"a","image":"evil.io/a:1"}`, `{"image":"reg.io/cust/a:1"}`} {
+		if w := do(bad); w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: got %d", bad, w.Code)
+		}
 	}
 }

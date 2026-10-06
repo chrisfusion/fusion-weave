@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -148,6 +149,67 @@ func (h *RunHandler) Stop(w http.ResponseWriter, r *http.Request) {
 	patch := client.MergeFrom(obj.DeepCopy())
 	obj.Status.Phase = weavev1alpha1.RunPhaseStopped
 	if err := h.client.Status().Patch(r.Context(), &obj, patch); err != nil {
+		internalError(w, r, err, "kind", "WeaveRun", "name", name)
+		return
+	}
+	writeJSON(w, http.StatusOK, obj)
+}
+
+// setImageRequest is the body of POST /runs/{name}/image.
+type setImageRequest struct {
+	StepName        string            `json:"stepName"`
+	Image           string            `json:"image"`
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+}
+
+// SetImage upserts one entry of spec.imageOverrides on a non-terminal run. The
+// image is validated against the allowlist here (unlike a raw PATCH), then the
+// operator rolls a Deployed run-owned deploy step to it. The write is
+// optimistic-locked so concurrent edits of other overrides are not lost.
+func (h *RunHandler) SetImage(w http.ResponseWriter, r *http.Request) {
+	name := nameFromURL(w, r)
+	if name == "" {
+		return
+	}
+	var req setImageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.StepName == "" {
+		writeError(w, http.StatusBadRequest, "stepName is required")
+		return
+	}
+	if err := imagepolicy.Validate(req.Image, h.allowedImagePrefixes); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var obj weavev1alpha1.WeaveRun
+	if err := h.client.Get(r.Context(), types.NamespacedName{Namespace: h.namespace, Name: name}, &obj); err != nil {
+		handleGetErr(w, r, err)
+		return
+	}
+	if isTerminalPhase(obj.Status.Phase) {
+		writeError(w, http.StatusConflict, "run is already in a terminal state")
+		return
+	}
+	patch := client.MergeFromWithOptions(obj.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	entry := weavev1alpha1.WeaveRunImageOverride{StepName: req.StepName, Image: req.Image, ImagePullPolicy: req.ImagePullPolicy}
+	found := false
+	for i := range obj.Spec.ImageOverrides {
+		if obj.Spec.ImageOverrides[i].StepName == req.StepName {
+			obj.Spec.ImageOverrides[i] = entry
+			found = true
+		}
+	}
+	if !found {
+		obj.Spec.ImageOverrides = append(obj.Spec.ImageOverrides, entry)
+	}
+	if err := h.client.Patch(r.Context(), &obj, patch); err != nil {
+		if errors.IsConflict(err) {
+			writeError(w, http.StatusConflict, "run was modified concurrently, retry")
+			return
+		}
 		internalError(w, r, err, "kind", "WeaveRun", "name", name)
 		return
 	}

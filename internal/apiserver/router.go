@@ -41,6 +41,7 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitori
 		runHandler := handlers.NewRunHandler(c, cfg.Namespace, allowedImages)
 		registerCRUD(r, "/runs", runHandler)
 		r.Post("/runs/{name}/stop", runHandler.(*handlers.RunHandler).Stop)
+		r.Post("/runs/{name}/image", runHandler.(*handlers.RunHandler).SetImage)
 
 		batchHandler := handlers.NewBatchTriggerHandler(c, cfg.Namespace)
 		registerCRUD(r, "/batchtriggers", batchHandler)
@@ -50,6 +51,7 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitori
 
 		registerCRUD(r, "/kafkatriggers", handlers.NewKafkaTriggerHandler(c, cfg.Namespace))
 
+		r.Get("/image-overrides/options", handlers.NewImageOverrideOptionsHandler(allowedImages))
 		r.Get("/external-auth/options", handlers.NewExternalAuthOptionsHandler(cfg.ExternalAuthServiceAccounts, cfg.ExternalAuthOIDCSecrets))
 	})
 

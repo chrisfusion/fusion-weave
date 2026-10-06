@@ -1455,6 +1455,8 @@ curl -H "Authorization: Bearer $KEY" \
 | PATCH | `/api/v1/runs/{name}` | editor | Partial update a WeaveRun |
 | POST | `/api/v1/runs/{name}/stop` | editor | Stop a run (`status.phase=Stopped`) |
 | DELETE | `/api/v1/runs/{name}` | admin | Delete a WeaveRun and its child resources |
+| POST | `/api/v1/runs/{name}/image` | editor | Upsert one `imageOverrides` entry `{stepName, image, imagePullPolicy?}` on a non-terminal run (validated; 400 bad image, 409 terminal/conflict) |
+| GET | `/api/v1/image-overrides/options` | viewer | `{allowedPrefixes: []}` — empty means image overrides are disabled |
 | GET | `/api/v1/external-auth/options` | viewer | List allowlisted ServiceAccount/Secret names for `externalAuthRef` |
 | GET | `/monitor/v1/runs` | viewer | List all WeaveRun summaries |
 | GET | `/monitor/v1/runs/{name}` | viewer | Run detail (run + jobs + events) |
