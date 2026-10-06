@@ -102,6 +102,7 @@ func Build(
 ) *batchv1.Job {
 	name := JobName(run.Name, step.Name, retryCount)
 	ns := run.Namespace
+	image, pullPolicy := run.ImageFor(step.Name, template.Spec.Image)
 
 	// Merge environment variables: template base → step overrides → run params.
 	env := mergeEnv(template.Spec.Env, step.EnvOverrides, run.Spec.ParameterOverrides)
@@ -317,7 +318,8 @@ func Build(
 					Containers: []corev1.Container{
 						{
 							Name:            "job",
-							Image:           template.Spec.Image,
+							Image:           image,
+							ImagePullPolicy: pullPolicy,
 							Command:         template.Spec.Command,
 							Args:            template.Spec.Args,
 							Env:             env,

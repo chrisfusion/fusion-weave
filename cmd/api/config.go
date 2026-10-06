@@ -40,6 +40,7 @@ func configFromFlags() apiserver.Config {
 
 	flag.StringVar(&cfg.ExternalAuthServiceAccounts, "external-auth-service-accounts", os.Getenv("EXTERNAL_AUTH_SERVICE_ACCOUNTS"), "Colon-separated allowlist of ServiceAccount names for externalAuthRef, exposed via GET /api/v1/external-auth/options.")
 	flag.StringVar(&cfg.ExternalAuthOIDCSecrets, "external-auth-oidc-secrets", os.Getenv("EXTERNAL_AUTH_OIDC_SECRETS"), "Colon-separated allowlist of Secret names for externalAuthRef, exposed via GET /api/v1/external-auth/options.")
+	flag.StringVar(&cfg.AllowedImagePrefixes, "allowed-image-prefixes", os.Getenv("ALLOWED_IMAGE_PREFIXES"), "Comma-separated image prefixes allowed in WeaveRun imageOverrides; empty rejects overrides.")
 
 	return cfg
 }

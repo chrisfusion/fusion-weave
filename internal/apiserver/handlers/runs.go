@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -12,13 +13,36 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/imagepolicy"
 )
 
 // RunHandler handles CRUD for WeaveRun.
-type RunHandler struct{ base }
+type RunHandler struct {
+	base
+	allowedImagePrefixes []string
+}
 
-func NewRunHandler(c client.Client, namespace string) ResourceHandler {
-	return &RunHandler{base{client: c, namespace: namespace}}
+func NewRunHandler(c client.Client, namespace string, allowedImagePrefixes []string) ResourceHandler {
+	return &RunHandler{base: base{client: c, namespace: namespace}, allowedImagePrefixes: allowedImagePrefixes}
+}
+
+// validateImageOverrides rejects a run whose image overrides are malformed:
+// duplicate steps, untagged/:latest images, or images outside the allowlist.
+// Chain-dependent checks (unknown step, chain-owned deploy step) are enforced by
+// the operator. PATCH bypasses this check by design (raw merge patch); the
+// operator re-validates before applying any image.
+func (h *RunHandler) validateImageOverrides(run *weavev1alpha1.WeaveRun) error {
+	seen := map[string]bool{}
+	for _, o := range run.Spec.ImageOverrides {
+		if seen[o.StepName] {
+			return fmt.Errorf("duplicate image override for step %q", o.StepName)
+		}
+		seen[o.StepName] = true
+		if err := imagepolicy.Validate(o.Image, h.allowedImagePrefixes); err != nil {
+			return fmt.Errorf("step %q: %w", o.StepName, err)
+		}
+	}
+	return nil
 }
 
 func (h *RunHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -34,6 +58,10 @@ func (h *RunHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var obj weavev1alpha1.WeaveRun
 	if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := h.validateImageOverrides(&obj); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	obj.Namespace = h.namespace
@@ -70,6 +98,10 @@ func (h *RunHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var obj weavev1alpha1.WeaveRun
 	if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := h.validateImageOverrides(&obj); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	obj.Name = name

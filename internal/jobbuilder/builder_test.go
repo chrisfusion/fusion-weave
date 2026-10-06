@@ -381,3 +381,28 @@ func TestExternalAuthSecretName(t *testing.T) {
 		t.Errorf("got %q, want run1-step1-0-ext-auth", got)
 	}
 }
+
+// ---- image override ----
+
+func TestBuild_ImageOverride_ReplacesTemplateImage(t *testing.T) {
+	run := minRun()
+	run.Spec.ImageOverrides = []weavev1alpha1.WeaveRunImageOverride{
+		{StepName: "step1", Image: "reg.io/cust/app:2.0", ImagePullPolicy: corev1.PullAlways},
+		{StepName: "other", Image: "reg.io/cust/other:1.0"},
+	}
+	step := &weavev1alpha1.WeaveChainStep{Name: "step1"}
+	c := jobbuilder.Build(minJobTmpl(), step, run, 0, "", "", security.Defaults{}, "", nil, "", "", "", nil, true, nil, "").Spec.Template.Spec.Containers[0]
+	if c.Image != "reg.io/cust/app:2.0" || c.ImagePullPolicy != corev1.PullAlways {
+		t.Errorf("got image %q policy %q", c.Image, c.ImagePullPolicy)
+	}
+}
+
+func TestBuild_NoImageOverride_KeepsTemplateImage(t *testing.T) {
+	run := minRun()
+	run.Spec.ImageOverrides = []weavev1alpha1.WeaveRunImageOverride{{StepName: "other", Image: "reg.io/cust/other:1.0"}}
+	step := &weavev1alpha1.WeaveChainStep{Name: "step1"}
+	c := jobbuilder.Build(minJobTmpl(), step, run, 0, "", "", security.Defaults{}, "", nil, "", "", "", nil, true, nil, "").Spec.Template.Spec.Containers[0]
+	if c.Image != "myrepo/myapp:1.0" || c.ImagePullPolicy != "" {
+		t.Errorf("got image %q policy %q", c.Image, c.ImagePullPolicy)
+	}
+}

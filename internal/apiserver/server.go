@@ -73,6 +73,10 @@ type Config struct {
 	// ExternalAuthOIDCSecrets is a colon-separated allowlist of Secret names
 	// available for externalAuthRef.mode=oidc, exposed the same way.
 	ExternalAuthOIDCSecrets string
+
+	// AllowedImagePrefixes is the comma-separated ALLOWED_IMAGE_PREFIXES list;
+	// WeaveRun.spec.imageOverrides images must match one. Empty rejects overrides.
+	AllowedImagePrefixes string
 }
 
 // Server is the REST API HTTP server.

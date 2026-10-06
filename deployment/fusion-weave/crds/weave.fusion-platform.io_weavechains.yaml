@@ -406,6 +406,11 @@ spec:
                       - RolledBack
                       - Unknown
                       type: string
+                    image:
+                      description: |-
+                        Image is the container image the Deployment currently runs when it was set
+                        through a WeaveRun image override. Empty otherwise.
+                      type: string
                     lastRollbackRevision:
                       description: LastRollbackRevision is the revision rolled back
                         to (set after a rollback).
@@ -417,6 +422,11 @@ spec:
                       type: string
                     message:
                       description: Message is a human-readable status detail.
+                      type: string
+                    previousImage:
+                      description: |-
+                        PreviousImage is the image that ran before the last image override change,
+                        kept for one-step rollback and audit.
                       type: string
                     stepName:
                       description: StepName is the chain step that owns this Deployment.

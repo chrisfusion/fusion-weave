@@ -113,6 +113,38 @@ spec:
                 - mode
                 - name
                 type: object
+              imageOverrides:
+                description: |-
+                  ImageOverrides replaces the container image of individual steps for this
+                  run only. This is the one run-spec field that may change after creation:
+                  editing the image of a Deployed run-owned deploy step rolls it forward.
+                items:
+                  description: |-
+                    WeaveRunImageOverride replaces the container image of one step for this run.
+                    For deploy-kind steps the step must also be run-owned (listed in StepOverrides);
+                    changing Image on a running run triggers a rolling update of its Deployment.
+                  properties:
+                    image:
+                      description: |-
+                        Image is the full image reference. It must carry an explicit immutable tag
+                        or a digest (":latest" and untagged images are rejected) and match one of
+                        the operator's ALLOWED_IMAGE_PREFIXES.
+                      minLength: 1
+                      type: string
+                    imagePullPolicy:
+                      description: ImagePullPolicy overrides the template's pull policy
+                        for this step.
+                      type: string
+                    stepName:
+                      description: StepName is the chain step whose template image
+                        is replaced.
+                      minLength: 1
+                      type: string
+                  required:
+                  - image
+                  - stepName
+                  type: object
+                type: array
               parameterOverrides:
                 description: |-
                   ParameterOverrides are injected as extra environment variables into all
@@ -249,9 +281,11 @@ spec:
                     multiple runs can share the same chain without colliding.
                   properties:
                     artifactName:
-                      description: ArtifactName is the full artifact name in fusion-index
-                        (e.g. "app.my-service").
-                      minLength: 1
+                      description: |-
+                        ArtifactName is the full artifact name in fusion-index (e.g. "app.my-service").
+                        Leave empty (together with Tag) for image-only mode: the step is run-owned
+                        but runs a custom image from ImageOverrides with no code-loader and no
+                        fusion-index metadata; ports, resources and env come from the template.
                       type: string
                     indexURL:
                       description: |-
@@ -275,13 +309,15 @@ spec:
                       type: string
                     tag:
                       description: Tag is the mutable tag to track (e.g. "stable").
-                      minLength: 1
+                        Required with ArtifactName.
                       type: string
                   required:
-                  - artifactName
                   - stepName
-                  - tag
                   type: object
+                  x-kubernetes-validations:
+                  - message: artifactName and tag must both be set or both be empty
+                    rule: (!has(self.artifactName) || self.artifactName == '') ==
+                      (!has(self.tag) || self.tag == '')
                 type: array
               triggerRef:
                 description: TriggerRef identifies the WeaveTrigger that created this
@@ -348,6 +384,11 @@ spec:
                       - RolledBack
                       - Unknown
                       type: string
+                    image:
+                      description: |-
+                        Image is the container image the Deployment currently runs when it was set
+                        through a WeaveRun image override. Empty otherwise.
+                      type: string
                     lastRollbackRevision:
                       description: LastRollbackRevision is the revision rolled back
                         to (set after a rollback).
@@ -359,6 +400,11 @@ spec:
                       type: string
                     message:
                       description: Message is a human-readable status detail.
+                      type: string
+                    previousImage:
+                      description: |-
+                        PreviousImage is the image that ran before the last image override change,
+                        kept for one-step rollback and audit.
                       type: string
                     stepName:
                       description: StepName is the chain step that owns this Deployment.

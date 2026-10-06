@@ -92,6 +92,16 @@ type WeaveActiveDeploymentStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
+	// Image is the container image the Deployment currently runs when it was set
+	// through a WeaveRun image override. Empty otherwise.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// PreviousImage is the image that ran before the last image override change,
+	// kept for one-step rollback and audit.
+	// +optional
+	PreviousImage string `json:"previousImage,omitempty"`
+
 	// CodeSourceArtifact is the fusion-index artifact name tracked by this deployment.
 	// Empty when the step has no codeSource.
 	// +optional

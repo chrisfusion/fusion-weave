@@ -29,6 +29,8 @@ spec:
           env:
             - name: NAMESPACE
               value: fusion
+            - name: ALLOWED_IMAGE_PREFIXES
+              value: ""
             - name: ALLOW_UNAUTHENTICATED
               value: "true"
           ports:

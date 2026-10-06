@@ -83,6 +83,10 @@ spec:
             - name: LOADER_IMAGE
               value: {{ $cs.loaderImage | quote }}
             {{- end }}
+            {{- if .Values.imageOverrides.allowedPrefixes }}
+            - name: ALLOWED_IMAGE_PREFIXES
+              value: {{ join "," .Values.imageOverrides.allowedPrefixes | quote }}
+            {{- end }}
             {{- if $cs.writablePaths }}
             - name: WRITABLE_PATHS
               value: {{ join ":" $cs.writablePaths | quote }}

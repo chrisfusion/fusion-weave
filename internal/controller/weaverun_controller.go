@@ -34,6 +34,7 @@ import (
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
 	"fusion-platform.io/fusion-weave/internal/dag"
 	"fusion-platform.io/fusion-weave/internal/deploybuilder"
+	"fusion-platform.io/fusion-weave/internal/imagepolicy"
 	"fusion-platform.io/fusion-weave/internal/indexclient"
 	"fusion-platform.io/fusion-weave/internal/jobbuilder"
 	"fusion-platform.io/fusion-weave/internal/keycloakclient"
@@ -73,6 +74,9 @@ type WeaveRunReconciler struct {
 	FusionIndexURL         string
 	LoaderImage            string
 	WritablePaths          []string
+	// AllowedImagePrefixes gates WeaveRun.spec.imageOverrides (ALLOWED_IMAGE_PREFIXES,
+	// comma-separated). Empty disables image overrides.
+	AllowedImagePrefixes []string
 	IngressHostSuffix      string
 	// ExternalAuthServiceAccounts is the deploy-time allowlist of ServiceAccount
 	// names usable with WeaveExternalAuthRef{Mode: serviceAccount}.
@@ -603,6 +607,20 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
+	// Validate image overrides before anything starts. Only a run that has not
+	// started yet is failed: an invalid *later* edit to a running run is ignored
+	// by syncRunDeploymentImage (the old image keeps running) rather than
+	// tearing the run down.
+	if len(run.Spec.ImageOverrides) > 0 && noStepStarted(&run) {
+		if err := imagepolicy.ValidateOverrides(run.Spec.ImageOverrides, stepKindsOf(chain.Spec.Steps), runOwnedSteps(run.Spec.StepOverrides), r.AllowedImagePrefixes); err != nil {
+			logger.Error(err, "invalid image overrides — failing run", "run", run.Name)
+			run.Status.Phase = weavev1alpha1.RunPhaseFailed
+			run.Status.Message = fmt.Sprintf("invalid image overrides: %v", err)
+			_ = r.Status().Patch(ctx, &run, base)
+			return ctrl.Result{}, nil
+		}
+	}
+
 	// C3 fix: build the working step map from value copies, not slice pointers.
 	stepStates := make(map[string]dag.StepPhase, len(chain.Spec.Steps))
 	stepMap := make(map[string]weavev1alpha1.WeaveRunStepStatus, len(run.Status.Steps))
@@ -649,6 +667,10 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			if ss.Phase == weavev1alpha1.StepPhaseDeployed {
 				override := findStepOverride(run.Spec.StepOverrides, name)
 				if override != nil {
+					if imgErr := r.syncRunDeploymentImage(ctx, &run, &deploy, name, &ss); imgErr != nil {
+						return ctrl.Result{}, imgErr
+					}
+					stepMap[name] = ss
 					// Run-owned deployment: handle code-source polling in this controller.
 					pollInterval := r.CodeSourcePollInterval
 					if pollInterval <= 0 {
@@ -960,6 +982,15 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					if err := r.Create(ctx, extSecret); err != nil && !errors.IsAlreadyExists(err) {
 						logger.Error(err, "failed to create external auth secret", "step", stepName, "run", run.Name)
 						failStepNow(&ss, fmt.Sprintf("failed to create external auth secret: %v", err))
+						stepStates[stepName] = dag.StepPhaseFailed
+						stepMap[stepName] = ss
+						continue
+					}
+				}
+
+				if img := imageOf(&run, stepName); img != "" {
+					if imgErr := imagepolicy.Validate(img, r.AllowedImagePrefixes); imgErr != nil {
+						failStepNow(&ss, fmt.Sprintf("image override: %v", imgErr))
 						stepStates[stepName] = dag.StepPhaseFailed
 						stepMap[stepName] = ss
 						continue
@@ -1563,6 +1594,91 @@ func (r *WeaveRunReconciler) doDeployTeardown(ctx context.Context, run *weavev1a
 	return nil
 }
 
+// noStepStarted reports whether every step is still Pending (or has no status
+// yet), i.e. nothing has been created for this run.
+func noStepStarted(run *weavev1alpha1.WeaveRun) bool {
+	for _, s := range run.Status.Steps {
+		if s.Phase != "" && s.Phase != weavev1alpha1.StepPhasePending {
+			return false
+		}
+	}
+	return true
+}
+
+// imageOf returns the run's override image for stepName, or "" when none is set.
+func imageOf(run *weavev1alpha1.WeaveRun, stepName string) string {
+	img, _ := run.ImageFor(stepName, "")
+	return img
+}
+
+// stepKindsOf maps step name to its effective kind (Job when unset).
+func stepKindsOf(steps []weavev1alpha1.WeaveChainStep) map[string]weavev1alpha1.WeaveStepKind {
+	out := make(map[string]weavev1alpha1.WeaveStepKind, len(steps))
+	for _, s := range steps {
+		k := s.StepKind
+		if k == "" {
+			k = weavev1alpha1.StepKindJob
+		}
+		out[s.Name] = k
+	}
+	return out
+}
+
+// runOwnedSteps returns the set of step names that have a stepOverrides entry.
+func runOwnedSteps(overrides []weavev1alpha1.WeaveRunStepOverride) map[string]bool {
+	out := make(map[string]bool, len(overrides))
+	for _, o := range overrides {
+		out[o.StepName] = true
+	}
+	return out
+}
+
+// syncRunDeploymentImage rolls a Deployed run-owned Deployment forward when the
+// run's image override for the step differs from the image the Deployment runs.
+// It patches only the "service" container image (Kubernetes then performs the
+// rolling update) and records Image/PreviousImage in run.Status.ActiveDeployments.
+// An override that fails validation is ignored with a step message so the old
+// image keeps serving; run.Status mutations are persisted by the caller's final patch.
+func (r *WeaveRunReconciler) syncRunDeploymentImage(
+	ctx context.Context,
+	run *weavev1alpha1.WeaveRun,
+	deploy *appsv1.Deployment,
+	stepName string,
+	ss *weavev1alpha1.WeaveRunStepStatus,
+) error {
+	desired, pull := run.ImageFor(stepName, "")
+	if desired == "" {
+		return nil
+	}
+	idx := -1
+	for i := range deploy.Spec.Template.Spec.Containers {
+		if deploy.Spec.Template.Spec.Containers[i].Name == "service" {
+			idx = i
+		}
+	}
+	if idx < 0 || deploy.Spec.Template.Spec.Containers[idx].Image == desired {
+		return nil
+	}
+	if err := imagepolicy.Validate(desired, r.AllowedImagePrefixes); err != nil {
+		ss.Message = fmt.Sprintf("image override ignored: %v", err)
+		return nil
+	}
+	previous := deploy.Spec.Template.Spec.Containers[idx].Image
+	patch := client.MergeFrom(deploy.DeepCopy())
+	deploybuilder.ApplyImage(deploy, desired, pull)
+	if err := r.Patch(ctx, deploy, patch); err != nil {
+		return fmt.Errorf("roll deployment %q to image %q: %w", deploy.Name, desired, err)
+	}
+	log.FromContext(ctx).Info("rolled deploy step to new image", "step", stepName, "from", previous, "to", desired)
+	ss.Message = ""
+	if entry, ok := run.Status.ActiveDeployments[deploy.Name]; ok {
+		entry.PreviousImage = previous
+		entry.Image = desired
+		run.Status.ActiveDeployments[deploy.Name] = entry
+	}
+	return nil
+}
+
 // findStepOverride returns the WeaveRunStepOverride for stepName, or nil if none.
 func findStepOverride(overrides []weavev1alpha1.WeaveRunStepOverride, stepName string) *weavev1alpha1.WeaveRunStepOverride {
 	for i := range overrides {
@@ -1587,10 +1703,16 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 	authSecretName string,
 	unsafeEnvironmentInjector bool,
 ) error {
-	indexURL := r.resolveIndexURL(override.IndexURL)
-	meta, csVersion, err := indexclient.FetchAppMetadataAndVersion(ctx, indexURL, override.ArtifactName, override.Tag)
-	if err != nil {
-		return fmt.Errorf("fetch app metadata for %s@%s: %w", override.ArtifactName, override.Tag, err)
+	// Image-only mode (no artifact): no fusion-index lookup, template values apply.
+	var meta *indexclient.AppMetadata
+	var csVersion string
+	if override.ArtifactName != "" {
+		var err error
+		indexURL := r.resolveIndexURL(override.IndexURL)
+		meta, csVersion, err = indexclient.FetchAppMetadataAndVersion(ctx, indexURL, override.ArtifactName, override.Tag)
+		if err != nil {
+			return fmt.Errorf("fetch app metadata for %s@%s: %w", override.ArtifactName, override.Tag, err)
+		}
 	}
 
 	ownerRef := metav1.NewControllerRef(runWithGVK, weaveRunGVK)
@@ -1598,9 +1720,15 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 
 	desired := deploybuilder.BuildFromOverride(svcTmpl, override, meta, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.SecurityDefaults, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, authSecretName, unsafeEnvironmentInjector)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
+	if image, pull := runWithGVK.ImageFor(stepSpec.Name, ""); image != "" {
+		if err := imagepolicy.Validate(image, r.AllowedImagePrefixes); err != nil {
+			return fmt.Errorf("image override for step %q: %w", stepSpec.Name, err)
+		}
+		deploybuilder.ApplyImage(desired, image, pull)
+	}
 
 	var existing appsv1.Deployment
-	err = r.Get(ctx, types.NamespacedName{Namespace: runWithGVK.Namespace, Name: deployName}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Namespace: runWithGVK.Namespace, Name: deployName}, &existing)
 	if errors.IsNotFound(err) {
 		if createErr := r.Create(ctx, desired); createErr != nil && !errors.IsAlreadyExists(createErr) {
 			return fmt.Errorf("create override deployment %q: %w", deployName, createErr)
@@ -1657,6 +1785,7 @@ func (r *WeaveRunReconciler) registerRunActiveDeployment(
 	}
 	indexURL := r.resolveIndexURL(override.IndexURL)
 	entry := weavev1alpha1.WeaveActiveDeploymentStatus{
+		Image:                    imageOf(run, stepName),
 		DeploymentName:           deploymentName,
 		StepName:                 stepName,
 		Health:                   weavev1alpha1.DeployHealthHealthy,
@@ -1674,7 +1803,10 @@ func (r *WeaveRunReconciler) registerRunActiveDeployment(
 	// a real resolved tag, so it never matches on the very first poll and every
 	// run-owned deploy step gets an unconditional, unnecessary rolling restart
 	// immediately after becoming Deployed.
-	if version, resolveErr := indexclient.ResolveTag(ctx, indexURL, override.ArtifactName, override.Tag); resolveErr == nil {
+	if override.ArtifactName == "" {
+		// Image-only mode: nothing to resolve or poll.
+		entry.CodeSourceIndexURL = ""
+	} else if version, resolveErr := indexclient.ResolveTag(ctx, indexURL, override.ArtifactName, override.Tag); resolveErr == nil {
 		entry.CodeSourceDeployedVersion = version
 	} else {
 		log.FromContext(ctx).Error(resolveErr, "could not resolve initial code-source version",

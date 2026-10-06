@@ -23,6 +23,7 @@ import (
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
 	"fusion-platform.io/fusion-weave/internal/controller"
+	"fusion-platform.io/fusion-weave/internal/imagepolicy"
 	"fusion-platform.io/fusion-weave/internal/security"
 	"fusion-platform.io/fusion-weave/internal/trigger"
 )
@@ -224,6 +225,7 @@ func main() {
 		FusionIndexURL:              fusionIndexURL,
 		LoaderImage:                 loaderImage,
 		WritablePaths:               writablePaths,
+		AllowedImagePrefixes:        imagepolicy.ParsePrefixes(os.Getenv("ALLOWED_IMAGE_PREFIXES")),
 		IngressHostSuffix:           ingressHostSuffix,
 		ExternalAuthServiceAccounts: externalAuthServiceAccounts,
 		ExternalAuthOIDCSecrets:     externalAuthOIDCSecrets,

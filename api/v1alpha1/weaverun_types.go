@@ -98,18 +98,22 @@ type WeaveRunStepStatus struct {
 // from the artifact's metadata.yaml in fusion-index rather than from the
 // WeaveServiceTemplate, and names the Deployment <runName>-<stepName> so
 // multiple runs can share the same chain without colliding.
+// +kubebuilder:validation:XValidation:rule="(!has(self.artifactName) || self.artifactName == '') == (!has(self.tag) || self.tag == '')",message="artifactName and tag must both be set or both be empty"
 type WeaveRunStepOverride struct {
 	// StepName is the name of the deploy-kind step in the chain to override.
 	// +kubebuilder:validation:MinLength=1
 	StepName string `json:"stepName"`
 
 	// ArtifactName is the full artifact name in fusion-index (e.g. "app.my-service").
-	// +kubebuilder:validation:MinLength=1
-	ArtifactName string `json:"artifactName"`
+	// Leave empty (together with Tag) for image-only mode: the step is run-owned
+	// but runs a custom image from ImageOverrides with no code-loader and no
+	// fusion-index metadata; ports, resources and env come from the template.
+	// +optional
+	ArtifactName string `json:"artifactName,omitempty"`
 
-	// Tag is the mutable tag to track (e.g. "stable").
-	// +kubebuilder:validation:MinLength=1
-	Tag string `json:"tag"`
+	// Tag is the mutable tag to track (e.g. "stable"). Required with ArtifactName.
+	// +optional
+	Tag string `json:"tag,omitempty"`
 
 	// IngressName is the leftmost DNS label for this service instance's
 	// hostname (e.g. "my-service"). The operator appends the cluster-wide
@@ -125,6 +129,25 @@ type WeaveRunStepOverride struct {
 	// then to the in-cluster default http://fusion-index-backend.fusion.svc.cluster.local:8080.
 	// +optional
 	IndexURL string `json:"indexURL,omitempty"`
+}
+
+// WeaveRunImageOverride replaces the container image of one step for this run.
+// For deploy-kind steps the step must also be run-owned (listed in StepOverrides);
+// changing Image on a running run triggers a rolling update of its Deployment.
+type WeaveRunImageOverride struct {
+	// StepName is the chain step whose template image is replaced.
+	// +kubebuilder:validation:MinLength=1
+	StepName string `json:"stepName"`
+
+	// Image is the full image reference. It must carry an explicit immutable tag
+	// or a digest (":latest" and untagged images are rejected) and match one of
+	// the operator's ALLOWED_IMAGE_PREFIXES.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+
+	// ImagePullPolicy overrides the template's pull policy for this step.
+	// +optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 }
 
 // WeaveRunSpec defines the immutable parameters of one chain execution.
@@ -148,6 +171,12 @@ type WeaveRunSpec struct {
 	// Non-override runs are unaffected.
 	// +optional
 	StepOverrides []WeaveRunStepOverride `json:"stepOverrides,omitempty"`
+
+	// ImageOverrides replaces the container image of individual steps for this
+	// run only. This is the one run-spec field that may change after creation:
+	// editing the image of a Deployed run-owned deploy step rolls it forward.
+	// +optional
+	ImageOverrides []WeaveRunImageOverride `json:"imageOverrides,omitempty"`
 
 	// AuthSecretRefOverride overrides WeaveChainSpec.AuthSecretRef (and any
 	// WeaveTriggerSpec.AuthSecretRefOverride) for this run only. Injected via
@@ -228,4 +257,15 @@ type WeaveRunList struct {
 
 func init() {
 	SchemeBuilder.Register(&WeaveRun{}, &WeaveRunList{})
+}
+
+// ImageFor returns the image and pull policy to use for stepName: the run's
+// image override when present, otherwise the template's image and an empty policy.
+func (r *WeaveRun) ImageFor(stepName, templateImage string) (string, corev1.PullPolicy) {
+	for _, o := range r.Spec.ImageOverrides {
+		if o.StepName == stepName {
+			return o.Image, o.ImagePullPolicy
+		}
+	}
+	return templateImage, ""
 }

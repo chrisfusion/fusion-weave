@@ -1043,3 +1043,40 @@ func TestBuildFromOverride_AuthSecretName_UnsafeInjectorTrue_FileStillMounted(t 
 		t.Error("expected weave-auth-secret volume even when envFrom is also set")
 	}
 }
+
+// ---- image-only override mode and ApplyImage ----
+
+func TestBuildFromOverride_ImageOnly_NoCodeLoader(t *testing.T) {
+	ov := &weavev1alpha1.WeaveRunStepOverride{StepName: "step1"}
+	deploy := deploybuilder.BuildFromOverride(minTmpl("myrepo/myapp:1.0"), ov, nil, "run1", "step1", "fusion", security.Defaults{}, "", "", "", []string{"/tmp"}, "", true)
+	spec := deploy.Spec.Template.Spec
+	if len(spec.InitContainers) != 0 {
+		t.Errorf("image-only mode must not add a code-loader, got %d init containers", len(spec.InitContainers))
+	}
+	for _, v := range spec.Volumes {
+		if v.Name == "weave-code" {
+			t.Error("image-only mode must not add the weave-code volume")
+		}
+	}
+	if _, ok := envVar(spec.Containers[0].Env, "WEAVE_ARTIFACT"); ok {
+		t.Error("WEAVE_ARTIFACT must not be set in image-only mode")
+	}
+	if spec.Containers[0].Image != "myrepo/myapp:1.0" {
+		t.Errorf("template image expected before ApplyImage, got %q", spec.Containers[0].Image)
+	}
+}
+
+func TestApplyImage_SetsServiceContainer(t *testing.T) {
+	ov := &weavev1alpha1.WeaveRunStepOverride{StepName: "step1"}
+	deploy := deploybuilder.BuildFromOverride(minTmpl("myrepo/myapp:1.0"), ov, nil, "run1", "step1", "fusion", security.Defaults{}, "", "", "", nil, "", true)
+	deploybuilder.ApplyImage(deploy, "reg.io/cust/app:2.0", corev1.PullAlways)
+	c := deploy.Spec.Template.Spec.Containers[0]
+	if c.Image != "reg.io/cust/app:2.0" || c.ImagePullPolicy != corev1.PullAlways {
+		t.Errorf("got image %q policy %q", c.Image, c.ImagePullPolicy)
+	}
+	deploybuilder.ApplyImage(deploy, "reg.io/cust/app:3.0", "")
+	c = deploy.Spec.Template.Spec.Containers[0]
+	if c.Image != "reg.io/cust/app:3.0" || c.ImagePullPolicy != corev1.PullAlways {
+		t.Errorf("empty pull policy must keep the existing one, got image %q policy %q", c.Image, c.ImagePullPolicy)
+	}
+}

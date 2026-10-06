@@ -416,65 +416,16 @@ func BuildFromOverride(
 	revLimit := tmpl.Spec.RevisionHistoryLimit
 	volumes, mounts := buildVolumes(tmpl.Spec.Volumes)
 
-	// Build codeSource init container using override artifact/tag.
-	indexURL := override.IndexURL
-	if indexURL == "" {
-		indexURL = defaultIndexURL
-	}
-	if indexURL == "" {
-		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
-	}
-	mountPath := "/weave-code"
-	loaderImage := defaultLoaderImage
-	if tmpl.Spec.CodeSource != nil {
-		if tmpl.Spec.CodeSource.MountPath != "" {
-			mountPath = tmpl.Spec.CodeSource.MountPath
-		}
-		if tmpl.Spec.CodeSource.LoaderImage != "" {
-			loaderImage = tmpl.Spec.CodeSource.LoaderImage
-		}
-	}
-	if loaderImage == "" {
-		loaderImage = "fusion-code-loader:latest"
-	}
-	volumes = append(volumes, corev1.Volume{
-		Name:         "weave-code",
-		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-	})
-	mounts = append(mounts, corev1.VolumeMount{Name: "weave-code", MountPath: mountPath})
-	initMounts := []corev1.VolumeMount{{Name: "weave-code", MountPath: mountPath}}
-	for _, p := range writablePaths {
-		volName := codesource.WritableVolumeName(p)
-		if volName == "" || codesource.HasVolume(volumes, volName) {
-			continue
-		}
-		volumes = append(volumes, corev1.Volume{
-			Name:         volName,
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-		})
-		vm := corev1.VolumeMount{Name: volName, MountPath: p}
-		mounts = append(mounts, vm)
-		initMounts = append(initMounts, vm)
-	}
-	initContainers := []corev1.Container{{
-		Name:            "code-loader",
-		Image:           loaderImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:         []string{"/loader"},
-		Env: []corev1.EnvVar{
-			{Name: "INDEX_URL", Value: indexURL},
-			{Name: "ARTIFACT_NAME", Value: override.ArtifactName},
-			{Name: "ARTIFACT_TAG", Value: override.Tag},
-			{Name: "MOUNT_PATH", Value: mountPath},
-		},
-		VolumeMounts:    initMounts,
-		SecurityContext: containerSC,
-	}}
-
-	// Merge env: template env first, then standard WEAVE_* vars + runner.args from metadata.
+	// Image-only mode (no artifact): no code-loader, no code volume, no WEAVE_*
+	// artifact env vars. Template env is used as-is.
+	var initContainers []corev1.Container
 	env := make([]corev1.EnvVar, len(tmpl.Spec.Env))
 	copy(env, tmpl.Spec.Env)
-	env = append(env, codesource.EnvVars(override.ArtifactName, override.Tag, version, namespace, mountPath, meta)...)
+	if override.ArtifactName != "" {
+		var mountPath string
+		initContainers, volumes, mounts, mountPath = buildOverrideCodeLoader(tmpl, override, containerSC, volumes, mounts, defaultIndexURL, defaultLoaderImage, writablePaths)
+		env = append(env, codesource.EnvVars(override.ArtifactName, override.Tag, version, namespace, mountPath, meta)...)
+	}
 
 	// Resources: metadata wins when non-empty, otherwise fall back to template.
 	resources := tmpl.Spec.Resources
@@ -582,6 +533,89 @@ func BuildFromOverride(
 				},
 			},
 		},
+	}
+}
+
+// buildOverrideCodeLoader builds the code-loader init container for an
+// artifact-backed step override and appends the code and writable-path volumes
+// to the given volumes/mounts. It returns the init containers, the extended
+// volumes and mounts, and the code mount path.
+func buildOverrideCodeLoader(
+	tmpl *weavev1alpha1.WeaveServiceTemplate,
+	override *weavev1alpha1.WeaveRunStepOverride,
+	containerSC *corev1.SecurityContext,
+	volumes []corev1.Volume,
+	mounts []corev1.VolumeMount,
+	defaultIndexURL, defaultLoaderImage string,
+	writablePaths []string,
+) ([]corev1.Container, []corev1.Volume, []corev1.VolumeMount, string) {
+	indexURL := override.IndexURL
+	if indexURL == "" {
+		indexURL = defaultIndexURL
+	}
+	if indexURL == "" {
+		indexURL = "http://fusion-index-backend.fusion.svc.cluster.local:8080"
+	}
+	mountPath := "/weave-code"
+	loaderImage := defaultLoaderImage
+	if tmpl.Spec.CodeSource != nil {
+		if tmpl.Spec.CodeSource.MountPath != "" {
+			mountPath = tmpl.Spec.CodeSource.MountPath
+		}
+		if tmpl.Spec.CodeSource.LoaderImage != "" {
+			loaderImage = tmpl.Spec.CodeSource.LoaderImage
+		}
+	}
+	if loaderImage == "" {
+		loaderImage = "fusion-code-loader:latest"
+	}
+	volumes = append(volumes, corev1.Volume{
+		Name:         "weave-code",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	})
+	mounts = append(mounts, corev1.VolumeMount{Name: "weave-code", MountPath: mountPath})
+	initMounts := []corev1.VolumeMount{{Name: "weave-code", MountPath: mountPath}}
+	for _, p := range writablePaths {
+		volName := codesource.WritableVolumeName(p)
+		if volName == "" || codesource.HasVolume(volumes, volName) {
+			continue
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         volName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		vm := corev1.VolumeMount{Name: volName, MountPath: p}
+		mounts = append(mounts, vm)
+		initMounts = append(initMounts, vm)
+	}
+	return []corev1.Container{{
+		Name:            "code-loader",
+		Image:           loaderImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"/loader"},
+		Env: []corev1.EnvVar{
+			{Name: "INDEX_URL", Value: indexURL},
+			{Name: "ARTIFACT_NAME", Value: override.ArtifactName},
+			{Name: "ARTIFACT_TAG", Value: override.Tag},
+			{Name: "MOUNT_PATH", Value: mountPath},
+		},
+		VolumeMounts:    initMounts,
+		SecurityContext: containerSC,
+	}}, volumes, mounts, mountPath
+}
+
+// ApplyImage sets the image (and, when non-empty, the pull policy) on the main
+// "service" container of a built Deployment. Used for WeaveRun image overrides.
+func ApplyImage(d *appsv1.Deployment, image string, pullPolicy corev1.PullPolicy) {
+	for i := range d.Spec.Template.Spec.Containers {
+		c := &d.Spec.Template.Spec.Containers[i]
+		if c.Name != "service" {
+			continue
+		}
+		c.Image = image
+		if pullPolicy != "" {
+			c.ImagePullPolicy = pullPolicy
+		}
 	}
 }
 

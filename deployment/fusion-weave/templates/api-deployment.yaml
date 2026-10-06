@@ -84,6 +84,10 @@ spec:
               value: {{ $apiLog.level | default "info" | quote }}
             - name: LOG_FORMAT
               value: {{ $apiLog.format | default "json" | quote }}
+            {{- if .Values.imageOverrides.allowedPrefixes }}
+            - name: ALLOWED_IMAGE_PREFIXES
+              value: {{ join "," .Values.imageOverrides.allowedPrefixes | quote }}
+            {{- end }}
             {{- if $ea.serviceAccounts }}
             - name: EXTERNAL_AUTH_SERVICE_ACCOUNTS
               value: {{ join ":" $ea.serviceAccounts | quote }}

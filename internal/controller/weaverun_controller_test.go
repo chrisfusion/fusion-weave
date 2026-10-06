@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -296,5 +297,95 @@ func TestDeleteExternalAuthSecret_DeletesExistingSecret(t *testing.T) {
 	err := c.Get(context.Background(), types.NamespacedName{Namespace: "fusion", Name: secretName}, &check)
 	if !errors.IsNotFound(err) {
 		t.Errorf("expected secret to be deleted, got err=%v", err)
+	}
+}
+
+// ---- syncRunDeploymentImage ----
+
+func imageTestDeployment(image string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "run1-svc", Namespace: "fusion"},
+		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "service", Image: image}},
+		}}},
+	}
+}
+
+func TestSyncRunDeploymentImage_RollsForwardAndRecordsHistory(t *testing.T) {
+	deploy := imageTestDeployment("reg.io/cust/app:1.0")
+	run := minWeaveRun("run1")
+	run.Spec.ImageOverrides = []weavev1alpha1.WeaveRunImageOverride{{StepName: "svc", Image: "reg.io/cust/app:2.0"}}
+	run.Status.ActiveDeployments = map[string]weavev1alpha1.WeaveActiveDeploymentStatus{"run1-svc": {DeploymentName: "run1-svc", Image: "reg.io/cust/app:1.0"}}
+	r := &WeaveRunReconciler{
+		Client:               fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(deploy).Build(),
+		AllowedImagePrefixes: []string{"reg.io/cust/"},
+	}
+	ss := &weavev1alpha1.WeaveRunStepStatus{Name: "svc"}
+	live := deploy.DeepCopy()
+	if err := r.syncRunDeploymentImage(context.Background(), run, live, "svc", ss); err != nil {
+		t.Fatal(err)
+	}
+	var got appsv1.Deployment
+	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "fusion", Name: "run1-svc"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if img := got.Spec.Template.Spec.Containers[0].Image; img != "reg.io/cust/app:2.0" {
+		t.Errorf("deployment image = %q, want 2.0", img)
+	}
+	e := run.Status.ActiveDeployments["run1-svc"]
+	if e.Image != "reg.io/cust/app:2.0" || e.PreviousImage != "reg.io/cust/app:1.0" {
+		t.Errorf("history = image %q previous %q", e.Image, e.PreviousImage)
+	}
+}
+
+func TestSyncRunDeploymentImage_RejectedImageKeepsOldAndSetsMessage(t *testing.T) {
+	deploy := imageTestDeployment("reg.io/cust/app:1.0")
+	run := minWeaveRun("run1")
+	run.Spec.ImageOverrides = []weavev1alpha1.WeaveRunImageOverride{{StepName: "svc", Image: "evil.io/app:2.0"}}
+	r := &WeaveRunReconciler{
+		Client:               fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(deploy).Build(),
+		AllowedImagePrefixes: []string{"reg.io/cust/"},
+	}
+	ss := &weavev1alpha1.WeaveRunStepStatus{Name: "svc"}
+	live := deploy.DeepCopy()
+	if err := r.syncRunDeploymentImage(context.Background(), run, live, "svc", ss); err != nil {
+		t.Fatal(err)
+	}
+	var got appsv1.Deployment
+	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "fusion", Name: "run1-svc"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if img := got.Spec.Template.Spec.Containers[0].Image; img != "reg.io/cust/app:1.0" {
+		t.Errorf("deployment image = %q, must stay at 1.0", img)
+	}
+	if ss.Message == "" {
+		t.Error("expected a step message explaining the ignored override")
+	}
+}
+
+func TestSyncRunDeploymentImage_NoOverrideIsNoop(t *testing.T) {
+	deploy := imageTestDeployment("reg.io/cust/app:1.0")
+	r := &WeaveRunReconciler{Client: fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(deploy).Build()}
+	ss := &weavev1alpha1.WeaveRunStepStatus{Name: "svc"}
+	if err := r.syncRunDeploymentImage(context.Background(), minWeaveRun("run1"), deploy.DeepCopy(), "svc", ss); err != nil {
+		t.Fatal(err)
+	}
+	if ss.Message != "" {
+		t.Errorf("unexpected message %q", ss.Message)
+	}
+}
+
+func TestNoStepStarted(t *testing.T) {
+	run := minWeaveRun("run1")
+	if !noStepStarted(run) {
+		t.Error("a run without step statuses has not started any step")
+	}
+	run.Status.Steps = []weavev1alpha1.WeaveRunStepStatus{{Name: "a", Phase: weavev1alpha1.StepPhasePending}}
+	if !noStepStarted(run) {
+		t.Error("only Pending steps: nothing started")
+	}
+	run.Status.Steps = append(run.Status.Steps, weavev1alpha1.WeaveRunStepStatus{Name: "b", Phase: weavev1alpha1.StepPhaseRunning})
+	if noStepStarted(run) {
+		t.Error("a Running step means the run has started")
 	}
 }

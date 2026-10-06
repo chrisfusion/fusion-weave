@@ -1162,6 +1162,9 @@ Represents a single execution of a WeaveChain. Created automatically by triggers
         "indexURL": "http://fusion-index-backend.fusion.svc.cluster.local:8080"
       }
     ],
+    "imageOverrides": [
+      {"stepName": "api-server", "image": "registry.example.com/customer-a/app:1.4.2"}
+    ],
     "authSecretRefOverride": {"name": "keycloak-service-creds"}
   }
 }
@@ -1173,7 +1176,15 @@ Represents a single execution of a WeaveChain. Created automatically by triggers
 
 `parameterOverrides` values are injected as environment variables into each job pod, taking precedence over the template and chain defaults.
 
-`stepOverrides` provides per-step deployment parameters for `stepKind: Deploy` steps. When a step name is listed here, the operator names the Deployment `<runName>-<stepName>` (owned by the WeaveRun, not the WeaveChain) and reads runner configuration from the artifact's `metadata.yaml` in fusion-index instead of from the `WeaveServiceTemplate` — this lets multiple runs of the same chain deploy independent, non-colliding service instances. `stepName`, `artifactName`, and `tag` are required per entry; `ingressName` (a DNS label, not a full hostname — same rule as `WeaveIngressRule.name`) is required if the chain step declares an Ingress; `indexURL` falls back the same way as `CodeSourceSpec.indexURL`. Steps not listed in `stepOverrides` are unaffected and continue to use the chain-owned `WeaveServiceTemplate` Deployment.
+`stepOverrides` provides per-step deployment parameters for `stepKind: Deploy` steps. When a step name is listed here, the operator names the Deployment `<runName>-<stepName>` (owned by the WeaveRun, not the WeaveChain) and reads runner configuration from the artifact's `metadata.yaml` in fusion-index instead of from the `WeaveServiceTemplate` — this lets multiple runs of the same chain deploy independent, non-colliding service instances. `stepName` is required per entry; `artifactName` and `tag` must be set together or both omitted (see **image-only mode** below); `ingressName` (a DNS label, not a full hostname — same rule as `WeaveIngressRule.name`) is required if the chain step declares an Ingress; `indexURL` falls back the same way as `CodeSourceSpec.indexURL`. Steps not listed in `stepOverrides` are unaffected and continue to use the chain-owned `WeaveServiceTemplate` Deployment.
+
+`imageOverrides` replaces the container image of individual steps for this run only, so one chain + template can serve many customers with their own images. Each entry has `stepName`, `image`, and an optional `imagePullPolicy`. Rules:
+- The image must carry an explicit **immutable** tag or a digest (`@sha256:…`); untagged images and `:latest` are rejected.
+- The image must start with one of the operator's allowed prefixes (`ALLOWED_IMAGE_PREFIXES`, comma-separated; Helm `imageOverrides.allowedPrefixes`). When none are configured, image overrides are disabled and rejected.
+- Job steps: the override applies to every Job created after it is set.
+- Deploy steps must also be run-owned (have a `stepOverrides` entry); an override on a chain-owned deploy step is rejected because that Deployment is shared across runs. **Image-only mode**: a `stepOverrides` entry without `artifactName`/`tag` creates the run-owned Deployment with no code-loader and no fusion-index lookup — ports, resources and env come from the `WeaveServiceTemplate`.
+- `imageOverrides` is the field to change on a running run: `PATCH /api/v1/runs/{name}` with a new `image` rolls a `Deployed` run-owned Deployment to it (Kubernetes rolling update). The previous image is kept in `status.activeDeployments[...].previousImage`; roll back by patching the old image back. An invalid new image is ignored (the old one keeps serving) and explained in the step's `message`.
+- `POST`/`PUT` validate tag/prefix/duplicates and answer 400 on violation. `PATCH` forwards a raw merge patch, so the operator is the final gate there.
 
 `authSecretRefOverride` overrides `WeaveChainSpec.authSecretRef` (and any `WeaveTriggerSpec.authSecretRefOverride`) for this run only, injected via `envFrom` into every step pod of this run.
 
@@ -1240,7 +1251,7 @@ Represents a single execution of a WeaveChain. Created automatically by triggers
 
 **`steps[].deploymentRef`**: set instead of `jobRef` for `stepKind: Deploy` steps.
 
-**`activeDeployments`**: present only when this run has `spec.stepOverrides`. Keyed by Deployment name (`<runName>-<stepName>`); tracks the code-source artifact/tag/version currently loaded for run-owned deploy steps, mirroring `WeaveChain.status.activeDeployments` for chain-owned ones.
+**`activeDeployments`**: present only when this run has `spec.stepOverrides`. Keyed by Deployment name (`<runName>-<stepName>`); tracks the code-source artifact/tag/version currently loaded for run-owned deploy steps (plus `image`/`previousImage` when an image override is active), mirroring `WeaveChain.status.activeDeployments` for chain-owned ones.
 
 ### List
 

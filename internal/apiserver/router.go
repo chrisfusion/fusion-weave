@@ -4,6 +4,7 @@
 package apiserver
 
 import (
+	"fusion-platform.io/fusion-weave/internal/imagepolicy"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -36,7 +37,7 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitori
 		registerCRUD(r, "/servicetemplates", handlers.NewServiceTemplateHandler(c, cfg.Namespace))
 		registerCRUD(r, "/chains", handlers.NewChainHandler(c, cfg.Namespace))
 		registerCRUD(r, "/triggers", handlers.NewTriggerHandler(c, cfg.Namespace))
-		runHandler := handlers.NewRunHandler(c, cfg.Namespace)
+		runHandler := handlers.NewRunHandler(c, cfg.Namespace, imagepolicy.ParsePrefixes(cfg.AllowedImagePrefixes))
 		registerCRUD(r, "/runs", runHandler)
 		r.Post("/runs/{name}/stop", runHandler.(*handlers.RunHandler).Stop)
 

@@ -204,6 +204,14 @@ codeSource:
     - /home/nonroot
     - /weave-work
 
+# imageOverrides gates WeaveRun.spec.imageOverrides (run-level custom images).
+# allowedPrefixes is a list of image-reference prefixes (e.g. "registry.example.com/customer-a/");
+# an override image must start with one of them and carry an explicit non-"latest" tag or a digest.
+# Empty (default) disables image overrides entirely. Maps to ALLOWED_IMAGE_PREFIXES
+# (comma-separated) on both the operator and the API server pod.
+imageOverrides:
+  allowedPrefixes: []
+
 # External auth configuration.
 # Deploy-time allowlists for WeaveChainSpec.externalAuthRef (and its trigger/run
 # overrides) — the maintainer creates the actual ServiceAccounts/Secrets manually
