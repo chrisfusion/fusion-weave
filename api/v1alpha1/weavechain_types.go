@@ -179,7 +179,8 @@ type WeaveChainStep struct {
 }
 
 // WeaveSharedStorageSpec configures a per-run ReadWriteMany PVC that is mounted
-// into every job pod at /weave-shared. The PVC is owned by the WeaveRun and is
+// into every job pod and every run-owned (stepOverrides) deploy step at
+// /weave-shared. Chain-owned deploy steps do not get it. The PVC is owned by the WeaveRun and is
 // garbage-collected automatically when the run is deleted.
 // Parallel write conflicts are the job author's responsibility.
 type WeaveSharedStorageSpec struct {
@@ -245,7 +246,8 @@ type WeaveChainSpec struct {
 	ConcurrencyPolicy WeaveConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
 
 	// SharedStorage, when set, provisions a ReadWriteMany PVC for each run of
-	// this chain and mounts it into every job pod at /weave-shared.
+	// this chain and mounts it into every job pod and run-owned (stepOverrides)
+	// deploy step at /weave-shared.
 	// +optional
 	SharedStorage *WeaveSharedStorageSpec `json:"sharedStorage,omitempty"`
 

@@ -119,7 +119,7 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - `WeaveRunStepStatus.OutputCaptured` guards the capture-and-write path — checked before calling `captureStepOutput` to prevent double-capture on requeue.
 
 ## Shared storage (per-run PVC)
-- Opt-in per chain: `spec.sharedStorage: {size: "500Mi", storageClassName: "csi-hostpath-sc"}` — mounts `/weave-shared` into every job pod (ReadWriteMany).
+- Opt-in per chain: `spec.sharedStorage: {size: "500Mi", storageClassName: "csi-hostpath-sc"}` — mounts `/weave-shared` into every job pod (ReadWriteMany) and every run-owned deploy step (`stepOverrides` entry, via `deploybuilder.ApplySharedStorage`). Chain-owned deploy steps do NOT get it: their Deployment outlives the run, the PVC does not.
 - PVC named `<runName>-shared`, owned by WeaveRun — GC'd automatically on run deletion.
 - minikube default StorageClass (`standard`) does NOT support RWX — enable the addon first: `minikube addons enable csi-hostpath-driver` (StorageClass: `csi-hostpath-sc`).
 - Chain controller validates `sharedStorage.size` is a parseable resource quantity at admission time.

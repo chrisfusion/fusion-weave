@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -1138,5 +1139,82 @@ func TestBuildIngressFromOverride_ClusterConfig_TLSAndAnnotations(t *testing.T) 
 	}
 	if len(ing.Spec.TLS) != 1 || ing.Spec.TLS[0].SecretName != "run1-step1-tls" || ing.Spec.TLS[0].Hosts[0] != "app.example.com" {
 		t.Errorf("tls: %+v", ing.Spec.TLS)
+	}
+}
+
+// ---- ApplySharedStorage ----
+
+func sharedTestDeploy() *appsv1.Deployment {
+	return deploybuilder.BuildFromOverride(
+		minTmpl("myrepo/myapp:1.0"), minOverride("org.myapp", "stable"), nil,
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "", "", nil, "", false)
+}
+
+func TestApplySharedStorage_MountsPVCOnServiceContainer(t *testing.T) {
+	d := sharedTestDeploy()
+	deploybuilder.ApplySharedStorage(d, "run1-shared")
+	spec := d.Spec.Template.Spec
+	var found bool
+	for _, v := range spec.Volumes {
+		if v.Name == "weave-shared" && v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == "run1-shared" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected weave-shared PVC volume, got %+v", spec.Volumes)
+	}
+	var mounted bool
+	for _, m := range spec.Containers[0].VolumeMounts {
+		if m.Name == "weave-shared" && m.MountPath == "/weave-shared" {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Errorf("expected /weave-shared mount on service container, got %+v", spec.Containers[0].VolumeMounts)
+	}
+}
+
+func TestApplySharedStorage_EmptyName_NoOp(t *testing.T) {
+	d := sharedTestDeploy()
+	before := len(d.Spec.Template.Spec.Volumes)
+	deploybuilder.ApplySharedStorage(d, "")
+	if len(d.Spec.Template.Spec.Volumes) != before {
+		t.Errorf("expected no volume added for empty PVC name")
+	}
+}
+
+func TestApplySharedStorage_Idempotent(t *testing.T) {
+	d := sharedTestDeploy()
+	deploybuilder.ApplySharedStorage(d, "run1-shared")
+	deploybuilder.ApplySharedStorage(d, "run1-shared")
+	n := 0
+	for _, v := range d.Spec.Template.Spec.Volumes {
+		if v.Name == "weave-shared" {
+			n++
+		}
+	}
+	mounts := 0
+	for _, m := range d.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "weave-shared" {
+			mounts++
+		}
+	}
+	if n != 1 || mounts != 1 {
+		t.Errorf("expected exactly one weave-shared volume and mount, got %d volumes, %d mounts", n, mounts)
+	}
+}
+
+func TestApplySharedStorage_InitContainerNotMounted(t *testing.T) {
+	tmpl := minTmpl("myrepo/myapp:1.0")
+	d := deploybuilder.BuildFromOverride(
+		tmpl, minOverride("org.myapp", "stable"), &indexclient.AppMetadata{},
+		"run1", "step1", "fusion", security.Defaults{}, "1.0.0", "http://idx", "loader:1", nil, "", false)
+	deploybuilder.ApplySharedStorage(d, "run1-shared")
+	for _, ic := range d.Spec.Template.Spec.InitContainers {
+		for _, m := range ic.VolumeMounts {
+			if m.Name == "weave-shared" {
+				t.Errorf("init container %q must not mount weave-shared", ic.Name)
+			}
+		}
 	}
 }

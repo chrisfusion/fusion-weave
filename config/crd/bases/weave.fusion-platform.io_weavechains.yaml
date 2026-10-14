@@ -125,7 +125,8 @@ spec:
               sharedStorage:
                 description: |-
                   SharedStorage, when set, provisions a ReadWriteMany PVC for each run of
-                  this chain and mounts it into every job pod at /weave-shared.
+                  this chain and mounts it into every job pod and run-owned (stepOverrides)
+                  deploy step at /weave-shared.
                 properties:
                   size:
                     description: Size is the PVC storage request (e.g. "500Mi", "2Gi").

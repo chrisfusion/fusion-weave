@@ -558,7 +558,7 @@ Defines the DAG of steps (job or deploy) that execute together as a pipeline.
 
 **`concurrencyPolicy`**: `Wait` (default — queue new runs) or `Forbid` (skip if one is already running).
 
-**`sharedStorage`**: mounts a per-run RWX PVC at `/weave-shared` in every job pod. Requires a StorageClass that supports ReadWriteMany.
+**`sharedStorage`**: mounts a per-run RWX PVC at `/weave-shared` in every job pod and every run-owned deploy step (one with a `stepOverrides` entry); chain-owned deploy steps do not get it because their Deployment outlives the run-owned PVC. Requires a StorageClass that supports ReadWriteMany.
 
 **`authSecretRef`**: optionally names a Secret injected via `envFrom` into every step pod of the chain (Job and Deploy kind alike). Its keys become environment variables that runner-side helper libraries (e.g. the `fusion-runner` Python `KeycloakAuth` helper) use to obtain access tokens. Overridable per-trigger (`WeaveTriggerSpec.authSecretRefOverride`) and per-run (`WeaveRunSpec.authSecretRefOverride`); precedence is run > trigger > chain.
 

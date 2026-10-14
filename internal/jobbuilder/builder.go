@@ -30,6 +30,20 @@ const sharedVolumeName = "weave-shared"
 // SharedMountPath is the path inside the container where the shared PVC is mounted.
 const SharedMountPath = "/weave-shared"
 
+// SharedVolume returns the pod volume and container mount that expose the
+// per-run shared PVC at SharedMountPath. Used by jobbuilder and deploybuilder.
+func SharedVolume(pvcName string) (corev1.Volume, corev1.VolumeMount) {
+	return corev1.Volume{
+			Name: sharedVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName},
+			},
+		}, corev1.VolumeMount{
+			Name:      sharedVolumeName,
+			MountPath: SharedMountPath,
+		}
+}
+
 // SharedPVCName returns the deterministic name for the per-run shared PVC.
 func SharedPVCName(runName string) string {
 	return runName + "-shared"
@@ -133,18 +147,9 @@ func Build(
 
 	// Mount the per-run shared PVC when the chain has SharedStorage configured.
 	if sharedPVCName != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: sharedVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: sharedPVCName,
-				},
-			},
-		})
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      sharedVolumeName,
-			MountPath: SharedMountPath,
-		})
+		vol, mount := SharedVolume(sharedPVCName)
+		volumes = append(volumes, vol)
+		mounts = append(mounts, mount)
 	}
 
 	// Resolve effective security contexts: template fields override global defaults.

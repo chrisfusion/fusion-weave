@@ -15,6 +15,7 @@ import (
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
 	"fusion-platform.io/fusion-weave/internal/codesource"
 	"fusion-platform.io/fusion-weave/internal/indexclient"
+	"fusion-platform.io/fusion-weave/internal/jobbuilder"
 	"fusion-platform.io/fusion-weave/internal/security"
 )
 
@@ -609,6 +610,27 @@ func ApplyImage(d *appsv1.Deployment, image string, pullPolicy corev1.PullPolicy
 		c.Image = image
 		if pullPolicy != "" {
 			c.ImagePullPolicy = pullPolicy
+		}
+	}
+}
+
+// ApplySharedStorage mounts the per-run shared PVC at /weave-shared on the main
+// "service" container of a run-owned Deployment. No-op when pvcName is empty or
+// the volume is already present. Only valid for run-owned Deployments: the PVC
+// is owned by the WeaveRun, so chain-owned Deployments must not reference it.
+func ApplySharedStorage(d *appsv1.Deployment, pvcName string) {
+	if pvcName == "" {
+		return
+	}
+	vol, mount := jobbuilder.SharedVolume(pvcName)
+	spec := &d.Spec.Template.Spec
+	if codesource.HasVolume(spec.Volumes, vol.Name) {
+		return
+	}
+	spec.Volumes = append(spec.Volumes, vol)
+	for i := range spec.Containers {
+		if spec.Containers[i].Name == "service" {
+			spec.Containers[i].VolumeMounts = append(spec.Containers[i].VolumeMounts, mount)
 		}
 	}
 }

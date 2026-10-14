@@ -1137,6 +1137,10 @@ func (r *WeaveRunReconciler) syncDeployStep(
 	}
 
 	// Upsert Deployment.
+	if run.Status.SharedPVCName != "" {
+		log.FromContext(ctx).Info("chain sharedStorage is not mounted into chain-owned deploy steps; add a stepOverrides entry to make the step run-owned",
+			"step", stepSpec.Name, "run", run.Name)
+	}
 	desired := deploybuilder.Build(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.SecurityDefaults, csMeta, csVersion, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, authSecretName, unsafeEnvironmentInjector)
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
@@ -1728,6 +1732,7 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 		}
 		deploybuilder.ApplyImage(desired, image, pull)
 	}
+	deploybuilder.ApplySharedStorage(desired, runWithGVK.Status.SharedPVCName)
 
 	var existing appsv1.Deployment
 	err := r.Get(ctx, types.NamespacedName{Namespace: runWithGVK.Namespace, Name: deployName}, &existing)

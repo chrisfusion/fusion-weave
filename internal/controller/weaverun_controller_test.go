@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/deploybuilder"
 )
 
 func minWeaveRun(name string) *weavev1alpha1.WeaveRun {
@@ -387,5 +388,53 @@ func TestNoStepStarted(t *testing.T) {
 	run.Status.Steps = append(run.Status.Steps, weavev1alpha1.WeaveRunStepStatus{Name: "b", Phase: weavev1alpha1.StepPhaseRunning})
 	if noStepStarted(run) {
 		t.Error("a Running step means the run has started")
+	}
+}
+
+// ---- syncDeployStepFromOverride + shared storage ----
+
+func syncOverrideSharedStorage(t *testing.T, pvcName string) *appsv1.Deployment {
+	t.Helper()
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
+	r := &WeaveRunReconciler{Client: c, Scheme: testScheme(t), Ingress: deploybuilder.IngressConfig{}}
+	run := minWeaveRun("run1")
+	run.UID = "uid-1"
+	run.Status.SharedPVCName = pvcName
+	tmpl := &weavev1alpha1.WeaveServiceTemplate{Spec: weavev1alpha1.WeaveServiceTemplateSpec{
+		Image: "nginx:1.27",
+		Ports: []weavev1alpha1.WeaveServicePort{{Name: "http", Port: 80, Protocol: corev1.ProtocolTCP}},
+	}}
+	step := &weavev1alpha1.WeaveChainStep{Name: "web"}
+	override := &weavev1alpha1.WeaveRunStepOverride{StepName: "web"} // image-only mode: no index lookup
+	var ss weavev1alpha1.WeaveRunStepStatus
+	if err := r.syncDeployStepFromOverride(context.Background(), run, step, tmpl, override, &ss, "", false); err != nil {
+		t.Fatalf("syncDeployStepFromOverride: %v", err)
+	}
+	var d appsv1.Deployment
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "fusion", Name: deploybuilder.RunDeploymentName("run1", "web")}, &d); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	return &d
+}
+
+func TestSyncDeployStepFromOverride_MountsSharedPVC(t *testing.T) {
+	d := syncOverrideSharedStorage(t, "run1-shared")
+	var ok bool
+	for _, v := range d.Spec.Template.Spec.Volumes {
+		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == "run1-shared" {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Errorf("expected run1-shared PVC volume, got %+v", d.Spec.Template.Spec.Volumes)
+	}
+}
+
+func TestSyncDeployStepFromOverride_NoSharedStorage_NoPVCVolume(t *testing.T) {
+	d := syncOverrideSharedStorage(t, "")
+	for _, v := range d.Spec.Template.Spec.Volumes {
+		if v.PersistentVolumeClaim != nil {
+			t.Errorf("unexpected PVC volume %+v", v)
+		}
 	}
 }
