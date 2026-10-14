@@ -249,6 +249,18 @@ ingress:
   # (status.valid=false) until this is set.
   # Example: "svc.instance-a.fusion.company.com"
   hostSuffix: ""
+  # annotations / labels are added to every Ingress the operator builds
+  # (JSON-encoded into INGRESS_ANNOTATIONS / INGRESS_LABELS). Operator-owned
+  # labels (fusion-platform.io/chain|run|step) win on a key collision.
+  # Example: annotations: {cert-manager.io/cluster-issuer: letsencrypt-prod}
+  annotations: {}
+  labels: {}
+  # tls.enabled adds a tls section to every Ingress: same hosts as the rules,
+  # secretName "<ingressName>-tls" (filled by e.g. cert-manager via the annotation
+  # above). A template's explicit spec.ingress.tlsSecretName takes precedence.
+  # Maps to INGRESS_TLS_ENABLED.
+  tls:
+    enabled: false
 
 # Periodic S3 backup of WeaveJobTemplate/WeaveServiceTemplate/WeaveChain/WeaveTrigger
 # specs (never WeaveRun, never .status) for disaster recovery. One day of staleness

@@ -77,7 +77,9 @@ type WeaveRunReconciler struct {
 	// AllowedImagePrefixes gates WeaveRun.spec.imageOverrides (ALLOWED_IMAGE_PREFIXES,
 	// comma-separated). Empty disables image overrides.
 	AllowedImagePrefixes []string
-	IngressHostSuffix      string
+	// Ingress is the instance-wide ingress config (INGRESS_HOST_SUFFIX,
+	// INGRESS_ANNOTATIONS, INGRESS_LABELS, INGRESS_TLS_ENABLED).
+	Ingress deploybuilder.IngressConfig
 	// ExternalAuthServiceAccounts is the deploy-time allowlist of ServiceAccount
 	// names usable with WeaveExternalAuthRef{Mode: serviceAccount}.
 	ExternalAuthServiceAccounts []string
@@ -1165,10 +1167,10 @@ func (r *WeaveRunReconciler) syncDeployStep(
 
 	// Upsert Ingress if configured.
 	if svcTmpl.Spec.Ingress != nil {
-		if r.IngressHostSuffix == "" {
+		if r.Ingress.HostSuffix == "" {
 			return fmt.Errorf("service template %q has an ingress but the operator ingress host suffix is not configured (set ingress.hostSuffix in the Helm chart)", svcTmpl.Name)
 		}
-		ing := deploybuilder.BuildIngress(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.IngressHostSuffix)
+		ing := deploybuilder.BuildIngress(svcTmpl, chain.Name, stepSpec.Name, run.Namespace, r.Ingress)
 		if ing != nil {
 			ing.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 			if err := r.upsertIngress(ctx, ing); err != nil {
@@ -1750,10 +1752,10 @@ func (r *WeaveRunReconciler) syncDeployStepFromOverride(
 		return fmt.Errorf("upsert override service %q: %w", svc.Name, err)
 	}
 
-	if (svcTmpl.Spec.Ingress != nil || override.IngressName != "") && r.IngressHostSuffix == "" {
+	if (svcTmpl.Spec.Ingress != nil || override.IngressName != "") && r.Ingress.HostSuffix == "" {
 		return fmt.Errorf("step %q has an ingress but the operator ingress host suffix is not configured (set ingress.hostSuffix in the Helm chart)", stepSpec.Name)
 	}
-	ing := deploybuilder.BuildIngressFromOverride(svcTmpl, meta, override, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.IngressHostSuffix)
+	ing := deploybuilder.BuildIngressFromOverride(svcTmpl, meta, override, runWithGVK.Name, stepSpec.Name, runWithGVK.Namespace, r.Ingress)
 	if ing != nil {
 		ing.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 		if err := r.upsertIngress(ctx, ing); err != nil {

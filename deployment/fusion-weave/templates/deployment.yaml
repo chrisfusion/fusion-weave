@@ -95,6 +95,18 @@ spec:
             - name: INGRESS_HOST_SUFFIX
               value: {{ $ingress.hostSuffix | quote }}
             {{- end }}
+            {{- if $ingress.annotations }}
+            - name: INGRESS_ANNOTATIONS
+              value: {{ $ingress.annotations | toJson | quote }}
+            {{- end }}
+            {{- if $ingress.labels }}
+            - name: INGRESS_LABELS
+              value: {{ $ingress.labels | toJson | quote }}
+            {{- end }}
+            {{- if and $ingress.tls $ingress.tls.enabled }}
+            - name: INGRESS_TLS_ENABLED
+              value: "true"
+            {{- end }}
             {{- if $ea.serviceAccounts }}
             - name: EXTERNAL_AUTH_SERVICE_ACCOUNTS
               value: {{ join ":" $ea.serviceAccounts | quote }}

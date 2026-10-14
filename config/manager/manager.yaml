@@ -60,6 +60,13 @@ spec:
               value: ""
             - name: INGRESS_HOST_SUFFIX
               value: "fusion.local"
+            # Optional instance-wide ingress config (JSON objects / "true"):
+            # - name: INGRESS_ANNOTATIONS
+            #   value: '{"cert-manager.io/cluster-issuer":"letsencrypt-prod"}'
+            # - name: INGRESS_LABELS
+            #   value: '{"env":"prod"}'
+            # - name: INGRESS_TLS_ENABLED
+            #   value: "true"
           resources:
             limits:
               cpu: 500m

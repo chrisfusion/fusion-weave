@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
 	"fusion-platform.io/fusion-weave/internal/controller"
+	"fusion-platform.io/fusion-weave/internal/deploybuilder"
 	"fusion-platform.io/fusion-weave/internal/imagepolicy"
 	"fusion-platform.io/fusion-weave/internal/security"
 	"fusion-platform.io/fusion-weave/internal/trigger"
@@ -132,6 +134,22 @@ func main() {
 	}
 
 	ingressHostSuffix := os.Getenv("INGRESS_HOST_SUFFIX")
+	ingressAnnotations, err := parseStringMapEnv("INGRESS_ANNOTATIONS")
+	if err != nil {
+		logger.Error(err, "invalid ingress configuration")
+		os.Exit(1)
+	}
+	ingressLabels, err := parseStringMapEnv("INGRESS_LABELS")
+	if err != nil {
+		logger.Error(err, "invalid ingress configuration")
+		os.Exit(1)
+	}
+	ingressCfg := deploybuilder.IngressConfig{
+		HostSuffix:  ingressHostSuffix,
+		Annotations: ingressAnnotations,
+		Labels:      ingressLabels,
+		TLS:         os.Getenv("INGRESS_TLS_ENABLED") == "true",
+	}
 
 	if err := (&controller.WeaveServiceTemplateReconciler{
 		Client:            mgr.GetClient(),
@@ -226,7 +244,7 @@ func main() {
 		LoaderImage:                 loaderImage,
 		WritablePaths:               writablePaths,
 		AllowedImagePrefixes:        imagepolicy.ParsePrefixes(os.Getenv("ALLOWED_IMAGE_PREFIXES")),
-		IngressHostSuffix:           ingressHostSuffix,
+		Ingress:                     ingressCfg,
 		ExternalAuthServiceAccounts: externalAuthServiceAccounts,
 		ExternalAuthOIDCSecrets:     externalAuthOIDCSecrets,
 		ExternalAuthDefaultTTL:      externalAuthDefaultTTL,
@@ -250,4 +268,18 @@ func main() {
 		logger.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// parseStringMapEnv reads a JSON object of string values from env var name.
+// An unset or empty variable yields a nil map.
+func parseStringMapEnv(name string) (map[string]string, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil, fmt.Errorf("%s must be a JSON object of string values: %w", name, err)
+	}
+	return m, nil
 }

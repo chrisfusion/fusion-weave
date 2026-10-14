@@ -292,7 +292,8 @@ func BuildService(
 // form the full hostname (see IngressHost).
 func BuildIngress(
 	tmpl *weavev1alpha1.WeaveServiceTemplate,
-	chainName, stepName, namespace, hostSuffix string,
+	chainName, stepName, namespace string,
+	cfg IngressConfig,
 ) *networkingv1.Ingress {
 	if tmpl.Spec.Ingress == nil {
 		return nil
@@ -340,7 +341,7 @@ func BuildIngress(
 		}
 
 		ing.Spec.Rules = append(ing.Spec.Rules, networkingv1.IngressRule{
-			Host: IngressHost(rule.Name, hostSuffix),
+			Host: IngressHost(rule.Name, cfg.HostSuffix),
 			IngressRuleValue: networkingv1.IngressRuleValue{
 				HTTP: &networkingv1.HTTPIngressRuleValue{
 					Paths: []networkingv1.HTTPIngressPath{
@@ -355,18 +356,11 @@ func BuildIngress(
 		})
 	}
 
-	if spec.TLSSecretName != "" {
-		var hosts []string
-		for _, r := range spec.Rules {
-			hosts = append(hosts, IngressHost(r.Name, hostSuffix))
-		}
-		ing.Spec.TLS = []networkingv1.IngressTLS{
-			{
-				Hosts:      hosts,
-				SecretName: spec.TLSSecretName,
-			},
-		}
+	var hosts []string
+	for _, r := range spec.Rules {
+		hosts = append(hosts, IngressHost(r.Name, cfg.HostSuffix))
 	}
+	applyIngressConfig(ing, cfg, spec.TLSSecretName, hosts)
 
 	return ing
 }
@@ -681,7 +675,8 @@ func BuildIngressFromOverride(
 	tmpl *weavev1alpha1.WeaveServiceTemplate,
 	meta *indexclient.AppMetadata,
 	override *weavev1alpha1.WeaveRunStepOverride,
-	runName, stepName, namespace, hostSuffix string,
+	runName, stepName, namespace string,
+	cfg IngressConfig,
 ) *networkingv1.Ingress {
 	if tmpl.Spec.Ingress == nil && override.IngressName == "" {
 		return nil
@@ -716,7 +711,7 @@ func BuildIngressFromOverride(
 	if ruleName == "" && tmpl.Spec.Ingress != nil && len(tmpl.Spec.Ingress.Rules) > 0 {
 		ruleName = tmpl.Spec.Ingress.Rules[0].Name
 	}
-	host := IngressHost(ruleName, hostSuffix)
+	host := IngressHost(ruleName, cfg.HostSuffix)
 
 	ing := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
@@ -749,15 +744,39 @@ func BuildIngressFromOverride(
 		if tmpl.Spec.Ingress.IngressClassName != nil {
 			ing.Spec.IngressClassName = tmpl.Spec.Ingress.IngressClassName
 		}
-		if tmpl.Spec.Ingress.TLSSecretName != "" {
-			ing.Spec.TLS = []networkingv1.IngressTLS{{
-				Hosts:      []string{host},
-				SecretName: tmpl.Spec.Ingress.TLSSecretName,
-			}}
-		}
 	}
+	var tmplSecret string
+	if tmpl.Spec.Ingress != nil {
+		tmplSecret = tmpl.Spec.Ingress.TLSSecretName
+	}
+	applyIngressConfig(ing, cfg, tmplSecret, []string{host})
 
 	return ing
+}
+
+// applyIngressConfig layers the instance-wide ingress configuration onto ing:
+// annotations, labels (operator-owned labels win) and the tls section. An
+// explicit template secret name wins over the generated "<ingressName>-tls";
+// the tls section uses the same hosts as the rules.
+func applyIngressConfig(ing *networkingv1.Ingress, cfg IngressConfig, tmplSecret string, hosts []string) {
+	if len(cfg.Annotations) > 0 {
+		ing.Annotations = make(map[string]string, len(cfg.Annotations))
+		for k, v := range cfg.Annotations {
+			ing.Annotations[k] = v
+		}
+	}
+	for k, v := range cfg.Labels {
+		if _, taken := ing.Labels[k]; !taken {
+			ing.Labels[k] = v
+		}
+	}
+	secret := tmplSecret
+	if secret == "" && cfg.TLS {
+		secret = TLSSecretName(ing.Name)
+	}
+	if secret != "" && len(hosts) > 0 {
+		ing.Spec.TLS = []networkingv1.IngressTLS{{Hosts: hosts, SecretName: secret}}
+	}
 }
 
 // resolveServicePort finds the ServicePort by name (string) or returns a
