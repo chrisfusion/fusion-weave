@@ -32,6 +32,7 @@ import (
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
 	"fusion-platform.io/fusion-weave/internal/deploybuilder"
+	"fusion-platform.io/fusion-weave/internal/imagepolicy"
 	"fusion-platform.io/fusion-weave/internal/indexclient"
 	"fusion-platform.io/fusion-weave/internal/jobbuilder"
 	"fusion-platform.io/fusion-weave/internal/security"
@@ -75,6 +76,8 @@ type WeaveAppReconciler struct {
 	WritablePaths          []string
 	Ingress                deploybuilder.IngressConfig
 	CodeSourcePollInterval time.Duration
+	// AllowedImagePrefixes is ALLOWED_IMAGE_PREFIXES; empty = images unrestricted.
+	AllowedImagePrefixes []string
 
 	ExternalAuthServiceAccounts []string
 	ExternalAuthOIDCSecrets     []string
@@ -173,6 +176,9 @@ func (r *WeaveAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // validate returns a human-readable reason when the spec is unusable, "" when valid.
 func (r *WeaveAppReconciler) validate(app *weavev1alpha1.WeaveApp) string {
 	spec := &app.Spec
+	if msg := validateAppImages(spec, r.AllowedImagePrefixes); msg != "" {
+		return msg
+	}
 	switch spec.Type {
 	case weavev1alpha1.WeaveAppTypeService:
 		if len(spec.Entrypoints) > 0 {
@@ -222,6 +228,20 @@ func (r *WeaveAppReconciler) validate(app *weavev1alpha1.WeaveApp) string {
 }
 
 // ---- type=service ----
+
+// validateAppImages applies the image policy to the workload image and to a
+// custom code-loader image (the operator default loader is trusted).
+func validateAppImages(spec *weavev1alpha1.WeaveAppSpec, allowed []string) string {
+	if err := imagepolicy.ValidateApp(spec.Image, allowed); err != nil {
+		return "spec.image: " + err.Error()
+	}
+	if cs := spec.CodeSource; cs != nil && cs.LoaderImage != "" {
+		if err := imagepolicy.ValidateApp(cs.LoaderImage, allowed); err != nil {
+			return "spec.codeSource.loaderImage: " + err.Error()
+		}
+	}
+	return ""
+}
 
 func validateAppIngress(svc *weavev1alpha1.WeaveAppService, hostSuffix string) string {
 	if svc.IngressName == "" && svc.Ingress == nil {

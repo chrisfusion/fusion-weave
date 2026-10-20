@@ -94,3 +94,29 @@ func TestValidateOverrides(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateApp(t *testing.T) {
+	prefixes := []string{"reg.io/team/"}
+	tests := []struct {
+		name     string
+		image    string
+		prefixes []string
+		wantErr  bool
+	}{
+		{"no policy configured allows anything", "docker.io/x/y:latest", nil, false},
+		{"no policy configured allows untagged", "busybox", nil, false},
+		{"allowed prefix with tag", "reg.io/team/app:1.0", prefixes, false},
+		{"allowed prefix with digest", "reg.io/team/app@sha256:abc", prefixes, false},
+		{"latest rejected once configured", "reg.io/team/app:latest", prefixes, true},
+		{"untagged rejected once configured", "reg.io/team/app", prefixes, true},
+		{"foreign registry rejected", "evil.io/team/app:1.0", prefixes, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := imagepolicy.ValidateApp(tc.image, tc.prefixes)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}

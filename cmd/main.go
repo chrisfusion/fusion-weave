@@ -267,6 +267,7 @@ func main() {
 	appReconciler.WritablePaths = writablePaths
 	appReconciler.Ingress = ingressCfg
 	appReconciler.CodeSourcePollInterval = codePollInterval
+	appReconciler.AllowedImagePrefixes = imagepolicy.ParsePrefixes(os.Getenv("ALLOWED_IMAGE_PREFIXES"))
 	appReconciler.ExternalAuthServiceAccounts = externalAuthServiceAccounts
 	appReconciler.ExternalAuthOIDCSecrets = externalAuthOIDCSecrets
 	appReconciler.ExternalAuthDefaultTTL = externalAuthDefaultTTL

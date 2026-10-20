@@ -12,13 +12,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
+	"fusion-platform.io/fusion-weave/internal/imagepolicy"
 )
 
-// AppHandler handles CRUD for WeaveApp.
-type AppHandler struct{ base }
+// AppHandler handles CRUD for WeaveApp. Create/Update reject images outside the
+// allowlist (400); PATCH, kubectl and Flux bypass this, so the operator
+// re-validates and marks the app Invalid instead of running it.
+type AppHandler struct {
+	base
+	allowedImagePrefixes []string
+}
 
-func NewAppHandler(c client.Client, namespace string) ResourceHandler {
-	return &AppHandler{base{client: c, namespace: namespace}}
+func NewAppHandler(c client.Client, namespace string, allowedImagePrefixes []string) ResourceHandler {
+	return &AppHandler{base: base{client: c, namespace: namespace}, allowedImagePrefixes: allowedImagePrefixes}
 }
 
 func (h *AppHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +41,16 @@ func (h *AppHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
+	}
+	if err := imagepolicy.ValidateApp(obj.Spec.Image, h.allowedImagePrefixes); err != nil {
+		writeError(w, http.StatusBadRequest, "spec.image: "+err.Error())
+		return
+	}
+	if cs := obj.Spec.CodeSource; cs != nil && cs.LoaderImage != "" {
+		if err := imagepolicy.ValidateApp(cs.LoaderImage, h.allowedImagePrefixes); err != nil {
+			writeError(w, http.StatusBadRequest, "spec.codeSource.loaderImage: "+err.Error())
+			return
+		}
 	}
 	obj.Namespace = h.namespace
 	defaultManagedByManual(&obj)
@@ -71,6 +87,16 @@ func (h *AppHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
+	}
+	if err := imagepolicy.ValidateApp(obj.Spec.Image, h.allowedImagePrefixes); err != nil {
+		writeError(w, http.StatusBadRequest, "spec.image: "+err.Error())
+		return
+	}
+	if cs := obj.Spec.CodeSource; cs != nil && cs.LoaderImage != "" {
+		if err := imagepolicy.ValidateApp(cs.LoaderImage, h.allowedImagePrefixes); err != nil {
+			writeError(w, http.StatusBadRequest, "spec.codeSource.loaderImage: "+err.Error())
+			return
+		}
 	}
 	obj.Name = name
 	obj.Namespace = h.namespace

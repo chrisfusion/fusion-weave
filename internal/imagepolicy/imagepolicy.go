@@ -46,6 +46,17 @@ func Validate(image string, allowedPrefixes []string) error {
 	return fmt.Errorf("image %q does not match any allowed prefix", image)
 }
 
+// ValidateApp checks an image of a WeaveApp. Unlike override images, an app
+// image is a normal part of the workload spec, so an empty allowedPrefixes means
+// "no policy configured" and everything passes; once prefixes are configured the
+// same rules as Validate apply (explicit non-latest tag or digest, allowed prefix).
+func ValidateApp(image string, allowedPrefixes []string) error {
+	if len(allowedPrefixes) == 0 {
+		return nil
+	}
+	return Validate(image, allowedPrefixes)
+}
+
 // ValidateList checks the chain-independent rules for a list of overrides
 // (shared by the run and trigger API handlers): unique step names and every
 // image passing Validate.

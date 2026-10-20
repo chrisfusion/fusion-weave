@@ -207,7 +207,9 @@ codeSource:
 # imageOverrides gates WeaveRun.spec.imageOverrides (run-level custom images).
 # allowedPrefixes is a list of image-reference prefixes (e.g. "registry.example.com/customer-a/");
 # an override image must start with one of them and carry an explicit non-"latest" tag or a digest.
-# Empty (default) disables image overrides entirely. Maps to ALLOWED_IMAGE_PREFIXES
+# Empty (default) disables image overrides entirely. The same list also gates the images of
+# WeaveApps (spec.image, codeSource.loaderImage), but there an empty list means unrestricted.
+# Maps to ALLOWED_IMAGE_PREFIXES
 # (comma-separated) on both the operator and the API server pod.
 imageOverrides:
   allowedPrefixes: []

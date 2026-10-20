@@ -1426,6 +1426,8 @@ A single service or job. One object owns its Deployment/Service/Ingress (type `s
 | `status.phase` | `Pending` \| `Ready` \| `Running` \| `Invalid` | `Invalid` details in `status.validationMessage` |
 | `status.executions[]` | list | Newest first, max 20: `entrypoint`, `jobName`, `phase`, `startTime`, `completionTime`, `message` |
 
+Image policy: when `ALLOWED_IMAGE_PREFIXES` is configured (comma-separated, Helm `imageOverrides.allowedPrefixes`), `spec.image` and a custom `spec.codeSource.loaderImage` must carry an explicit non-`latest` tag or a digest and start with an allowed prefix. `POST`/`PUT` return `400` otherwise. `PATCH`, `kubectl` and Flux bypass the API, so the operator re-checks: the app gets `status.phase: Invalid` with the reason in `status.validationMessage`, no new execution starts, and an already running Deployment is left untouched. With the list empty (default) apps are unrestricted. A codeSource app's runner image is subject to the same list.
+
 Fire an entrypoint on demand: `PATCH /api/v1/apps/{name}` with `{"metadata":{"annotations":{"fusion-platform.io/fire":"<entrypoint>"}}}` (consumed by the operator; a run of the same entrypoint still active is skipped).
 
 ### Examples

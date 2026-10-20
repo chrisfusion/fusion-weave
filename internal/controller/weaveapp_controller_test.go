@@ -699,3 +699,63 @@ func TestWeaveAppService_CodeSourceMetadataDrivesIngressPathAndPort(t *testing.T
 		t.Errorf("deployed version: %q", got.Status.CodeSourceDeployedVersion)
 	}
 }
+
+func TestWeaveAppValidate_ImagePolicy(t *testing.T) {
+	r := newAppReconciler(t)
+	r.AllowedImagePrefixes = []string{"reg.io/team/"}
+
+	app := jobApp("a")
+	app.Spec.Image = "reg.io/team/app:1.0"
+	if msg := r.validate(app); msg != "" {
+		t.Fatalf("allowed image rejected: %q", msg)
+	}
+	app.Spec.Image = "evil.io/app:1.0"
+	if msg := r.validate(app); !strings.Contains(msg, "spec.image") {
+		t.Fatalf("foreign image accepted: %q", msg)
+	}
+	app.Spec.Image = "reg.io/team/app:1.0"
+	app.Spec.CodeSource = &weavev1alpha1.CodeSourceSpec{ArtifactName: "x", Tag: "t", LoaderImage: "evil.io/loader:1"}
+	if msg := r.validate(app); !strings.Contains(msg, "loaderImage") {
+		t.Fatalf("foreign loader image accepted: %q", msg)
+	}
+	app.Spec.CodeSource.LoaderImage = ""
+	if msg := r.validate(app); msg != "" {
+		t.Fatalf("operator-default loader must not be policy-checked: %q", msg)
+	}
+	r.AllowedImagePrefixes = nil
+	app.Spec.Image = "anything"
+	if msg := r.validate(app); msg != "" {
+		t.Fatalf("no policy configured must allow: %q", msg)
+	}
+}
+
+func TestWeaveAppImagePolicy_InvalidAppKeepsRunningDeployment(t *testing.T) {
+	app := serviceApp("site")
+	r := newAppReconciler(t, app)
+	reconcileApp(t, r, "site")
+
+	r.AllowedImagePrefixes = []string{"reg.io/team/"} // policy tightened after the app was admitted
+	got := reconcileApp(t, r, "site")
+	if got.Status.Phase != weavev1alpha1.WeaveAppPhaseInvalid || !strings.Contains(got.Status.ValidationMessage, "spec.image") {
+		t.Fatalf("status: %+v", got.Status)
+	}
+	var d appsv1.Deployment
+	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "fusion", Name: "site-app"}, &d); err != nil {
+		t.Fatalf("existing deployment must stay untouched: %v", err)
+	}
+	if d.Spec.Template.Spec.Containers[0].Image != "nginx:1.27" {
+		t.Errorf("image changed: %s", d.Spec.Template.Spec.Containers[0].Image)
+	}
+}
+
+func TestWeaveAppImagePolicy_RejectedImageNeverLaunchesJob(t *testing.T) {
+	app := jobApp("etl")
+	r := newAppReconciler(t, app)
+	r.AllowedImagePrefixes = []string{"reg.io/team/"}
+	reconcileApp(t, r, "etl")
+	fireAnnotated(t, r, "etl", "adhoc")
+	reconcileApp(t, r, "etl")
+	if n := len(listAppJobs(t, r)); n != 0 {
+		t.Fatalf("no job may run with a rejected image, got %d", n)
+	}
+}
