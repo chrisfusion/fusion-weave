@@ -56,8 +56,11 @@ spec:
               value: ""
             - name: WRITABLE_PATHS
               value: "/tmp:/home/nonroot:/weave-work"
+            # Local dev: images allowed for run/trigger overrides and for WeaveApps. The runner image must be
+            # listed for codeSource apps (WeaveApp images are checked against this list when it is set);
+            # empty = overrides disabled, apps unrestricted.
             - name: ALLOWED_IMAGE_PREFIXES
-              value: ""
+              value: "nginx:,busybox:,fusion-runner-python312:,registry.k8s.io/pause:"
             - name: INGRESS_HOST_SUFFIX
               value: "fusion.local"
             # Optional instance-wide ingress config (JSON objects / "true"):

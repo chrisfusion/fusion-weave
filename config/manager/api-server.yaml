@@ -29,8 +29,11 @@ spec:
           env:
             - name: NAMESPACE
               value: fusion
+            # Local dev: images allowed for run/trigger overrides and for WeaveApps. The runner image must be
+            # listed for codeSource apps (WeaveApp images are checked against this list when it is set);
+            # empty = overrides disabled, apps unrestricted.
             - name: ALLOWED_IMAGE_PREFIXES
-              value: ""
+              value: "nginx:,busybox:,fusion-runner-python312:,registry.k8s.io/pause:"
             - name: ALLOW_UNAUTHENTICATED
               value: "true"
           ports:
