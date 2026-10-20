@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.6.0] — 2026-10-20
+
 ### Changed
 - `upsertIngress` now also propagates changed instance-wide `ingress.annotations`/`labels` to an already-existing Ingress (additive merge — annotations set by other tools are kept); previously only `spec` was patched, so a changed Helm value never reached existing run-owned Ingresses.
 - Internal: external-auth token minting/allowlist check, Service/Ingress upserts, rolling restart and job/pod failure messages are now receiver-free helpers in `internal/controller` shared by the WeaveRun and WeaveApp reconcilers (behaviour unchanged).
