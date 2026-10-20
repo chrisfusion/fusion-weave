@@ -8,9 +8,10 @@ Existing version headings are not in chronological/numeric order (e.g. a `[0.3.0
 - One line per change — be specific enough that a reader understands scope without reading the diff.
 
 ## Project
-Kubernetes operator in Go that schedules job DAGs. 5 CRDs: WeaveJobTemplate, WeaveServiceTemplate, WeaveChain, WeaveTrigger, WeaveRun.
+Kubernetes operator in Go that schedules job DAGs. 6 CRDs: WeaveJobTemplate, WeaveServiceTemplate, WeaveChain, WeaveTrigger, WeaveRun, plus WeaveApp (one-resource service/job fast lane, no DAG).
 
 ## Architecture
+- `internal/controller/weaveapp_controller.go` — WeaveApp reconciler (`fa`): owns Deployment/Service/Ingress (type=service) or Jobs (type=job); builds in-memory WeaveServiceTemplate/WeaveJobTemplate/WeaveRun and calls the same jobbuilder/deploybuilder as the chain path. Shared receiver-free helpers live in `deploy_helpers.go` (upserts, `restartDeploymentForVersion`) and `external_auth_sa.go` (token minting, allowlist check).
 - `api/v1alpha1/` — CRD type definitions (WeaveJobTemplate, WeaveServiceTemplate, WeaveChain, WeaveTrigger, WeaveRun)
 - `internal/controller/` — 5 reconcilers, one per CRD; weaverun_controller.go is the main execution engine
 - `internal/dag/` — pure-Go DAG engine (graph.go + executor.go); no Kubernetes dependency, fully unit-tested
@@ -55,6 +56,12 @@ Go dependencies are vendored and committed (`vendor/`, ~69 MB on disk) because t
 - `internal/apiserver/handlers` had no test files before `external-auth/options` — `externalauth_test.go` sets the convention: `package handlers` (same package, since it also tests the unexported parsing helper), `net/http/httptest` for handler-level assertions, no fake client needed for config-only (non-Kubernetes-backed) handlers.
 
 ## Key gotchas
+- WeaveApp (`fa`): no template/chain/trigger/run objects; everything is owner-ref'd to the app (delete = full cleanup), history in `status.executions` (last 20). Jobs are created by the operator, never a CronJob (external-auth token is minted per launch); schedules are 6-field, seconds first; on-demand via `fusion-platform.io/fire=<entrypoint>` (consumed). Not supported: Kafka/BatchCron, outputs, shared storage, backup (`internal/backup` omits it).
+- WeaveApp `image` is always required (runner image when `codeSource` is set). `ALLOWED_IMAGE_PREFIXES` gates app images and `codeSource.loaderImage` but, unlike run overrides, an empty list means *unrestricted*; runner images must be on a configured list. The operator is the real gate (Flux/kubectl/PATCH bypass the API handler).
+- WeaveApp service ingress uses chain-owned `deploybuilder.BuildIngress`, NOT `BuildIngressFromOverride` (that one drops extra rules, pathType, class and tlsSecretName). Service/Ingress names equal the `Run*` names for `(app.Name, "app")`.
+- `client.Patch` overwrites its argument with the server response — patch a `DeepCopy` when the in-memory object holds unsaved status (WeaveApp fire-annotation consume).
+- Patching a Deployment's whole pod template each reconcile wipes `restartedAt`; for code-source services the rebuilt template's changed `WEAVE_VERSION` env is itself the rolling restart — do not add a second restart.
+- A just-created Job may be missing from the informer cache for a moment: don't mark an execution failed for a missing Job inside ~1 minute of its start.
 - `gofmt -l ./...` currently flags several files with pre-existing struct-literal column misalignment unrelated to any given change (likely a local `gofmt` version drift). Check `git diff` before trusting `gofmt -l` output — only reformat lines your own edit touched, don't blanket `gofmt -w` the repo.
 - Any cluster-scoped resource this chart creates (ClusterRole, ClusterRoleBinding, CRDs) must be named uniquely across every possible install, not just `{{ .Release.Name }}-x` — multiple environments installed under the identical release name `fusion-weave` collided on `fusion-weave-api-tokenreview`, and Helm refuses to let one release manage a cluster-scoped object it doesn't already own. Qualify by `{{ .Release.Namespace }}` too (fixed for `api-clusterrole.yaml`/`api-clusterrolebinding.yaml` and their `config/rbac/` raw-YAML counterparts).
 - Colon-separated allowlist parsing (`WRITABLE_PATHS`, `EXTERNAL_AUTH_SERVICE_ACCOUNTS`, `EXTERNAL_AUTH_OIDC_SECRETS`) is copy-pasted per call site (`cmd/main.go`, `internal/apiserver/handlers/externalauth.go`) — no shared helper exists. Mirror the trim-whitespace-and-drop-empty-entries logic exactly when adding a new consumer, rather than assuming it's handled centrally.
@@ -85,6 +92,8 @@ Go dependencies are vendored and committed (`vendor/`, ~69 MB on disk) because t
 - `jobbuilder.Build`/`deploybuilder.Build`/`BuildFromOverride` are now 16/12/12 positional args — the next addition to any of them should switch to a params struct. When bulk-patching many near-identical existing call sites (e.g. a new trailing param across a `_test.go` file), a small paren-balancing script beats one-by-one edits — but watch for multi-line calls with a trailing `//` comment or dangling comma before the closing `)`; naive text insertion silently corrupts them.
 
 ## Deploy / test cycle on minikube
+Fast WeaveApp test data: `../fusion-testcases/v3-beta/template-wizard-*` artifacts (`app.template-wizard-job-single-entrypoint`, `...-multi-entrypoint`, `...-service-streamlit`, tag `stable`) are already built from local gitea by the wizard GitWatchers; runner image `fusion-runner-python312:local`; external-auth allowlist has `ext-auth-demo-sa`; live `ALLOWED_IMAGE_PREFIXES=nginx:,busybox:` (so the runner image needs adding to test codeSource apps with the policy on). New CRDs need `kubectl apply -f config/crd/bases/<crd>.yaml` and `config/rbac/role.yaml` + `api-role.yaml` before the restart.
+
 **The live `fusion` namespace install is raw-YAML (`make minikube-deploy` / `config/manager/`+`config/rbac/`), NOT a Helm release**, even though its objects carry Helm chart labels. There IS a Helm release literally named `fusion-weave` in the cluster (`helm list -n default`), but it's unrelated/orphaned — upgrading it touches nothing in `fusion`. To change the live `fusion` deployment: edit `config/manager/manager.yaml` / `config/rbac/*.yaml` directly and `kubectl apply`/`kubectl set env` (a full `kubectl apply` on the Deployment can fail with "spec.selector: field is immutable" if it's drifted from git — use `kubectl set env`/`kubectl patch` for a single-field live change instead). `fusion-dev-a`/`fusion-dev-b` each have their own real, Flux-managed `fusion-weave` Helm release too — three different "fusion-weave" releases/pseudo-releases exist across the cluster; check `helm list -A` namespace column before assuming which one you're touching.
 
 `minikube image load <name>:<tag>` (by name) can silently keep a stale cached image even though it reports success; `docker save -o x.tar <name>:<tag>` then `minikube image load x.tar` reliably picks up a rebuilt image.
@@ -210,6 +219,7 @@ RBAC is a namespaced Role (not ClusterRole) — do not expand scope without upda
 - `trigger-batchcron.yaml` (Tier 1, busybox) and `codesource-batchcron.yaml` (Tier 2, `showroom.codeSourceApps.batchMetadata`) are two separate `BatchCron` demos, not variants of each other — "batch" means the trigger type in one and a non-web app-build shape in the other. `codesource-batchcron.yaml` is the one that combines both `codeSource` and `BatchCron`: the fired job reads back its own artifact metadata (`WEAVE_*`) alongside the firing job's `JOB_*`/`JOB_METADATA` env vars.
 
 ## Monitoring API (internal/monitoring/)
+- `GET /monitor/v1/apps/{name}/logs` (`?entrypoint=`, `?execution=<jobName>`, `?container=code-loader`) — pod resolution/tailing shared with step logs via `Base.podForJob`/`podForDeployment`/`tailLogs`; finished jobs expire after `executionTTLSeconds` (24h), then 404.
 - Routes mounted at `/monitor/v1/` — enabled with `MONITORING_ENABLED=true`; disabled by default.
 - Prometheus metrics served on a **separate port** (`METRICS_ADDR=:9091`, `/metrics`); no auth middleware on that port.
 - Package structure: `internal/monitoring/cache/` (TTLCache), `internal/monitoring/logsink/` (Sink interface + KafkaSink/NoopSink), `internal/monitoring/handlers/` (Base + per-resource handlers), `internal/monitoring/routes.go`, `internal/monitoring/metrics_server.go`.
