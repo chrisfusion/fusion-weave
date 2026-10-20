@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.6.1] — 2026-10-20
+
 ### Added
 - GitOps account `fusion-weave-gitops` (ServiceAccount + Role + RoleBinding, Helm `gitops.enabled`, default on; raw YAML in `config/rbac/gitops-*.yaml`) for Flux Kustomizations (`spec.serviceAccountName`) that apply user-owned repos: may only manage `weaveapps` and the wizard CRDs in `gitops.wizardResources` (default `wizardruns`) in the release namespace — no Deployments, Jobs, Secrets, chains or templates.
 
