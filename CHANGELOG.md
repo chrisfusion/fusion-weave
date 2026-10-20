@@ -7,6 +7,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- GitOps account `fusion-weave-gitops` (ServiceAccount + Role + RoleBinding, Helm `gitops.enabled`, default on; raw YAML in `config/rbac/gitops-*.yaml`) for Flux Kustomizations (`spec.serviceAccountName`) that apply user-owned repos: may only manage `weaveapps` and the wizard CRDs in `gitops.wizardResources` (default `wizardruns`) in the release namespace — no Deployments, Jobs, Secrets, chains or templates.
+
 ### Changed
 - `config/manager/manager.yaml` and `api-server.yaml`: `ALLOWED_IMAGE_PREFIXES` is now `nginx:,busybox:,fusion-runner-python312:,registry.k8s.io/pause:` instead of empty, matching the live local `fusion` instance. The runner image has to be on the list for codeSource `WeaveApp`s once it is non-empty; a `kubectl set env` of it was lost on every redeploy from these manifests.
 

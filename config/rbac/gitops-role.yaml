@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fusion-weave-gitops
+  namespace: fusion
+rules:
+  # Only WeaveApps (and the wizard CRDs below) — a gitopsed repo must not be able
+  # to create Deployments, Jobs, Secrets, chains/templates or anything else directly.
+  # No status subresource: status is owned by the operator. Flux needs create/patch
+  # to server-side apply, get/list/watch for health checks and delete to prune.
+  - apiGroups: ["weave.fusion-platform.io"]
+    resources:
+      - weaveapps
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["wizard.fusion-platform.io"]
+    resources:
+      - wizardruns
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

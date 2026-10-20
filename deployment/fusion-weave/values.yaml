@@ -303,6 +303,27 @@ backup:
     accessKeyId: ""
     secretAccessKey: ""
 
+# GitOps account for user-owned repos: a ServiceAccount + Role restricted to WeaveApps
+# (and the wizard CRDs listed below) in the release namespace. Reference it from the Flux
+# Kustomization that applies such a repo:
+#   spec.serviceAccountName: fusion-weave-gitops
+#   spec.targetNamespace: <release namespace>
+# Flux resolves serviceAccountName in the Kustomization's own namespace, so that
+# Kustomization must live in the release namespace too. Anything else in the repo
+# (Deployments, Secrets, WeaveChains, ...) is rejected by RBAC and fails the apply.
+# The operator's image policy (imageOverrides.allowedPrefixes) still gates WeaveApp images.
+gitops:
+  enabled: true
+
+  serviceAccount:
+    name: fusion-weave-gitops
+
+  # Resources of the fusion-wizard CRDs (group wizard.fusion-platform.io) the account may
+  # manage. wizardresources is the wizard's own ledger and wizarddefinitions are recipes —
+  # keep them out unless repos are meant to author those.
+  wizardResources:
+    - wizardruns
+
 # Showroom: a curated, preseeded set of example WeaveChains demonstrating the
 # platform's major features. Disabled by default.
 # Deploy the full tour with: helm upgrade --install ... --set showroom.enabled=true
