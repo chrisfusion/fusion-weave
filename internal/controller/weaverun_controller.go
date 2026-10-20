@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -37,7 +36,6 @@ import (
 	"fusion-platform.io/fusion-weave/internal/imagepolicy"
 	"fusion-platform.io/fusion-weave/internal/indexclient"
 	"fusion-platform.io/fusion-weave/internal/jobbuilder"
-	"fusion-platform.io/fusion-weave/internal/keycloakclient"
 	"fusion-platform.io/fusion-weave/internal/security"
 )
 
@@ -107,6 +105,10 @@ func failStepNow(ss *weavev1alpha1.WeaveRunStepStatus, msg string) {
 // failures (e.g. the code-loader) it includes a tail of the container logs so
 // the root cause (bad INDEX_URL, missing artifact, etc.) is visible in status.
 func (r *WeaveRunReconciler) jobFailureMessage(ctx context.Context, namespace string, job *batchv1.Job) string {
+	return jobFailureMessage(ctx, r, r.KubeClient, namespace, job)
+}
+
+func jobFailureMessage(ctx context.Context, c client.Reader, kube kubernetes.Interface, namespace string, job *batchv1.Job) string {
 	// Collect Job-level condition message — used as base, not short-circuit.
 	condMsg := ""
 	for _, c := range job.Status.Conditions {
@@ -118,7 +120,7 @@ func (r *WeaveRunReconciler) jobFailureMessage(ctx context.Context, namespace st
 
 	// List pods and check termination state for richer detail.
 	var pods corev1.PodList
-	if err := r.List(ctx, &pods,
+	if err := c.List(ctx, &pods,
 		client.InNamespace(namespace),
 		client.MatchingLabels{"job-name": job.Name},
 	); err != nil {
@@ -132,7 +134,7 @@ func (r *WeaveRunReconciler) jobFailureMessage(ctx context.Context, namespace st
 		// Init containers first — code-loader exits 1 on bad INDEX_URL / missing artifact.
 		for _, cs := range pod.Status.InitContainerStatuses {
 			if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
-				tail := r.podLogTail(ctx, namespace, pod.Name, cs.Name, 10)
+				tail := podLogTail(ctx, kube, namespace, pod.Name, cs.Name, 10)
 				if tail != "" {
 					return fmt.Sprintf("init container %q exited %d:\n%s",
 						cs.Name, cs.State.Terminated.ExitCode, tail)
@@ -165,8 +167,12 @@ func (r *WeaveRunReconciler) jobFailureMessage(ctx context.Context, namespace st
 // is confirmed (restartCount >= 2 or CrashLoopBackOff), empty when it's too early
 // to call. Used to surface loader errors (bad INDEX_URL etc.) for deploy steps.
 func (r *WeaveRunReconciler) deploymentPodFailureMessage(ctx context.Context, namespace string, deploy *appsv1.Deployment) string {
+	return deploymentPodFailureMessage(ctx, r, r.KubeClient, namespace, deploy)
+}
+
+func deploymentPodFailureMessage(ctx context.Context, c client.Reader, kube kubernetes.Interface, namespace string, deploy *appsv1.Deployment) string {
 	var pods corev1.PodList
-	if err := r.List(ctx, &pods,
+	if err := c.List(ctx, &pods,
 		client.InNamespace(namespace),
 		client.MatchingLabels(deploy.Spec.Selector.MatchLabels),
 	); err != nil {
@@ -181,7 +187,7 @@ func (r *WeaveRunReconciler) deploymentPodFailureMessage(ctx context.Context, na
 				continue
 			}
 			exitCode := containerExitCode(cs)
-			tail := r.podLogTail(ctx, namespace, pod.Name, cs.Name, 10)
+			tail := podLogTail(ctx, kube, namespace, pod.Name, cs.Name, 10)
 			if tail != "" {
 				return fmt.Sprintf("init container %q crash-looping (exit %d):\n%s", cs.Name, exitCode, tail)
 			}
@@ -217,8 +223,12 @@ func containerExitCode(cs corev1.ContainerStatus) int32 {
 // CrashLoopBackOff where the container is waiting, not terminated).
 // Returns an empty string on any error so callers can treat it as optional.
 func (r *WeaveRunReconciler) podLogTail(ctx context.Context, namespace, podName, container string, lines int64) string {
+	return podLogTail(ctx, r.KubeClient, namespace, podName, container, lines)
+}
+
+func podLogTail(ctx context.Context, kube kubernetes.Interface, namespace, podName, container string, lines int64) string {
 	for _, previous := range []bool{false, true} {
-		stream, err := r.KubeClient.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+		stream, err := kube.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
 			Container: container,
 			TailLines: &lines,
 			Previous:  previous,
@@ -327,17 +337,8 @@ func (r *WeaveRunReconciler) resolveExternalAuthRef(ctx context.Context, run *we
 		return nil, nil
 	}
 
-	var allowed []string
-	switch ref.Mode {
-	case weavev1alpha1.ExternalAuthModeServiceAccount:
-		allowed = r.ExternalAuthServiceAccounts
-	case weavev1alpha1.ExternalAuthModeOIDC:
-		allowed = r.ExternalAuthOIDCSecrets
-	default:
-		return nil, fmt.Errorf("externalAuthRef.mode %q must be serviceAccount or oidc", ref.Mode)
-	}
-	if !slices.Contains(allowed, ref.Name) {
-		return nil, fmt.Errorf("externalAuthRef.name %q is not in the configured allowlist for mode %q", ref.Name, ref.Mode)
+	if err := checkExternalAuthAllowed(ref, r.ExternalAuthServiceAccounts, r.ExternalAuthOIDCSecrets); err != nil {
+		return nil, err
 	}
 	return ref, nil
 }
@@ -380,18 +381,8 @@ func (r *WeaveRunReconciler) deleteExternalAuthSecret(ctx context.Context, ns, j
 	}
 }
 
-// mintOIDCToken reads the allowlisted Secret's Keycloak client credentials and
-// performs a client_credentials grant to obtain a short-lived access token.
 func (r *WeaveRunReconciler) mintOIDCToken(ctx context.Context, ns, secretName string) (string, error) {
-	var sec corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: secretName}, &sec); err != nil {
-		return "", fmt.Errorf("get oidc credentials secret %q: %w", secretName, err)
-	}
-	tok, err := keycloakclient.MintClientCredentialsToken(ctx, string(sec.Data["tokenURL"]), string(sec.Data["clientId"]), string(sec.Data["clientSecret"]))
-	if err != nil {
-		return "", err
-	}
-	return tok.AccessToken, nil
+	return mintOIDCToken(ctx, r, ns, secretName)
 }
 
 // +kubebuilder:rbac:groups=weave.fusion-platform.io,resources=weaveruns,verbs=get;list;watch;create;update;patch;delete
@@ -961,14 +952,7 @@ func (r *WeaveRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 						ttl = time.Duration(*tmpl.Spec.ActiveDeadlineSeconds)*time.Second + 60*time.Second
 					}
 
-					var token string
-					var mintErr error
-					switch externalAuthRef.Mode {
-					case weavev1alpha1.ExternalAuthModeServiceAccount:
-						token, mintErr = r.mintServiceAccountToken(ctx, run.Namespace, externalAuthRef.Name, ttl)
-					case weavev1alpha1.ExternalAuthModeOIDC:
-						token, mintErr = r.mintOIDCToken(ctx, run.Namespace, externalAuthRef.Name)
-					}
+					token, mintErr := mintExternalAuthToken(ctx, r, r.KubeClient, r.ExternalAuthSAAudience, run.Namespace, externalAuthRef, ttl)
 					if mintErr != nil {
 						logger.Error(mintErr, "failed to mint external auth token", "step", stepName, "run", run.Name)
 						failStepNow(&ss, fmt.Sprintf("failed to mint external auth token: %v", mintErr))
@@ -1194,39 +1178,12 @@ func (r *WeaveRunReconciler) syncDeployStep(
 
 // upsertService creates a Service or patches it if it already exists.
 func (r *WeaveRunReconciler) upsertService(ctx context.Context, desired *corev1.Service) error {
-	var existing corev1.Service
-	err := r.Get(ctx, types.NamespacedName{Namespace: desired.Namespace, Name: desired.Name}, &existing)
-	if errors.IsNotFound(err) {
-		if createErr := r.Create(ctx, desired); createErr != nil && !errors.IsAlreadyExists(createErr) {
-			return createErr
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	patch := client.MergeFrom(existing.DeepCopy())
-	existing.Spec.Ports = desired.Spec.Ports
-	existing.Spec.Type = desired.Spec.Type
-	return r.Patch(ctx, &existing, patch)
+	return upsertService(ctx, r.Client, desired)
 }
 
 // upsertIngress creates an Ingress or patches it if it already exists.
 func (r *WeaveRunReconciler) upsertIngress(ctx context.Context, desired *networkingv1.Ingress) error {
-	var existing networkingv1.Ingress
-	err := r.Get(ctx, types.NamespacedName{Namespace: desired.Namespace, Name: desired.Name}, &existing)
-	if errors.IsNotFound(err) {
-		if createErr := r.Create(ctx, desired); createErr != nil && !errors.IsAlreadyExists(createErr) {
-			return createErr
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	patch := client.MergeFrom(existing.DeepCopy())
-	existing.Spec = desired.Spec
-	return r.Patch(ctx, &existing, patch)
+	return upsertIngress(ctx, r.Client, desired)
 }
 
 // registerActiveDeployment adds (or updates) an entry in WeaveChain.Status.ActiveDeployments
@@ -1847,19 +1804,8 @@ func (r *WeaveRunReconciler) pollRunDeploymentCodeSource(ctx context.Context, ru
 		"old", entry.CodeSourceDeployedVersion,
 		"new", current)
 
-	var deploy appsv1.Deployment
-	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: deploymentName}, &deploy); err != nil {
-		return fmt.Errorf("get deployment for code reload: %w", err)
-	}
-	deployPatch := client.MergeFrom(deploy.DeepCopy())
-	if deploy.Spec.Template.Annotations == nil {
-		deploy.Spec.Template.Annotations = map[string]string{}
-	}
-	deploy.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().UTC().Format(time.RFC3339)
-	deploy.Spec.Template.Annotations["fusion-platform.io/code-source-version"] = current
-	deploybuilder.UpdateVersionEnvVar(deploy.Spec.Template.Spec.Containers, current)
-	if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
-		return fmt.Errorf("patch deployment for code reload: %w", err)
+	if err := restartDeploymentForVersion(ctx, r.Client, run.Namespace, deploymentName, current); err != nil {
+		return err
 	}
 
 	entry.CodeSourceDeployedVersion = current

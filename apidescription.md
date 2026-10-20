@@ -1403,12 +1403,71 @@ curl -H "Authorization: Bearer $KEY" \
 
 ---
 
+## WeaveApp
+
+A single service or job. One object owns its Deployment/Service/Ingress (type `service`) or its Jobs (type `job`); deleting it removes everything it created. No template, chain, trigger or run objects exist. Standard CRUD under `/api/v1/apps`.
+
+### Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `spec.type` | `service` \| `job` | Required, immutable |
+| `spec.image` | string | Required. With `codeSource` this is the runner image |
+| `spec.codeSource` | object | Optional fusion-index artifact (`artifactName`, `tag`, `indexURL`, `mountPath`, `loaderImage`) |
+| `spec.command`, `args`, `env`, `resources`, `volumes`, `serviceAccountName`, `podSecurityContext`, `containerSecurityContext` | | Same as WeaveJobTemplate |
+| `spec.service` | object | `type=service` only: `ports`, `replicas`, `serviceType`, probes, plus either `ingressName` or `ingress` (mutually exclusive) |
+| `spec.service.ingressName` | DNS label | Shorthand: one host `<name>.<ingress.hostSuffix>`, path `/` (or the artifact's `ingress.path`), Prefix match, port from the artifact's `runner.port` else the first port |
+| `spec.service.ingress` | object | Full control, same semantics as WeaveServiceTemplate `spec.ingress`: `ingressClassName`, `tlsSecretName`, `rules[]` (`name`, `path`, `pathType` Exact/Prefix/ImplementationSpecific, optional `servicePort`). The artifact's `ingress.path` replaces the path of the first rule. Instance-wide `ingress.annotations`/`labels`/`tls` Helm values apply on top |
+| `spec.entrypoints[]` | list | `type=job` only, at least one: `name`, `command`, `args`, `env`, `schedule` (6-field cron, seconds first; empty = on demand) |
+| `spec.externalAuthRef` | `{mode, name}` | `type=job` only; same mechanism and allowlists as WeaveChain |
+| `spec.unsafeEnvironmentInjector` | bool | Default true: also expose the external auth token as an env var |
+| `spec.activeDeadlineSeconds` | int | Per-execution timeout (`type=job`) |
+| `spec.executionTTLSeconds` | int | How long finished Jobs are kept, default 86400 |
+| `status.phase` | `Pending` \| `Ready` \| `Running` \| `Invalid` | `Invalid` details in `status.validationMessage` |
+| `status.executions[]` | list | Newest first, max 20: `entrypoint`, `jobName`, `phase`, `startTime`, `completionTime`, `message` |
+
+Fire an entrypoint on demand: `PATCH /api/v1/apps/{name}` with `{"metadata":{"annotations":{"fusion-platform.io/fire":"<entrypoint>"}}}` (consumed by the operator; a run of the same entrypoint still active is skipped).
+
+### Examples
+
+```json
+POST /api/v1/apps
+{"metadata":{"name":"report"},"spec":{"type":"job","image":"registry/py:1.0",
+ "externalAuthRef":{"mode":"oidc","name":"report-client"},
+ "entrypoints":[{"name":"nightly","command":["python","etl.py"],"schedule":"0 0 2 * * *"},
+                {"name":"adhoc","command":["python","report.py"]}]}}
+```
+
+```json
+POST /api/v1/apps
+{"metadata":{"name":"dash"},"spec":{"type":"service","image":"fusion-runner:1.4.0",
+ "codeSource":{"artifactName":"dash","tag":"stable"},"service":{"ingressName":"dash"}}}
+```
+
+```json
+POST /api/v1/apps
+{"metadata":{"name":"site"},"spec":{"type":"service","image":"nginx:1.27",
+ "service":{"ports":[{"name":"http","port":80}],
+  "ingress":{"ingressClassName":"nginx","tlsSecretName":"site-cert",
+   "rules":[{"name":"site","path":"/app","pathType":"Exact"}]}}}}
+```
+
+Responses: `201` on create, `409` if the name exists, `204` on delete; list/get/update/patch as for the other resources.
+
+---
+
 ## Complete Endpoint Index
 
 | Method | Path | Role required | Description |
 |---|---|---|---|
 | GET | `/healthz` | none | Liveness check |
 | GET | `/readyz` | none | Readiness check |
+| GET | `/api/v1/apps` | viewer | List all WeaveApps |
+| POST | `/api/v1/apps` | editor | Create a WeaveApp |
+| GET | `/api/v1/apps/{name}` | viewer | Get a WeaveApp |
+| PUT | `/api/v1/apps/{name}` | editor | Replace a WeaveApp |
+| PATCH | `/api/v1/apps/{name}` | editor | Merge-patch a WeaveApp (also fires entrypoints via annotation) |
+| DELETE | `/api/v1/apps/{name}` | admin | Delete a WeaveApp and everything it owns |
 | GET | `/api/v1/jobtemplates` | viewer | List all WeaveJobTemplates |
 | POST | `/api/v1/jobtemplates` | editor | Create a WeaveJobTemplate |
 | GET | `/api/v1/jobtemplates/{name}` | viewer | Get a WeaveJobTemplate |
@@ -1463,6 +1522,7 @@ curl -H "Authorization: Bearer $KEY" \
 | GET | `/monitor/v1/runs/{name}/jobs` | viewer | batch/v1 Jobs for a run |
 | GET | `/monitor/v1/runs/{name}/jobs/{jobName}` | viewer | Single batch/v1 Job |
 | GET | `/monitor/v1/runs/{name}/steps/{step}/logs` | viewer | Pod log snapshot (last N lines) |
+| GET | `/monitor/v1/apps/{name}/logs` | viewer | Pod log snapshot of a WeaveApp (`?entrypoint=`, `?execution=`, `?container=`) |
 | GET | `/monitor/v1/runs/{name}/events` | viewer | Kubernetes events for a run |
 | GET | `/monitor/v1/events` | viewer | All events (optional `?fieldSelector=`) |
 | GET | `/monitor/v1/chains/{name}/deployments` | viewer | Deployments owned by a chain |
@@ -1569,6 +1629,35 @@ curl -H "Authorization: Bearer $KEY" \
 ```
 
 `N` is configurable via `MONITOR_LOG_LINES` (default `100`). The response is cached; log lines are also published to the configured log sink asynchronously.
+
+---
+
+### GET /monitor/v1/apps/{name}/logs
+
+Log snapshot (last N lines, same `MONITOR_LOG_LINES`, cache and log-sink behaviour as the step logs above) for a WeaveApp.
+
+- `type=service`: the best pod of the app's Deployment (a Running pod is preferred).
+- `type=job`: the pod of the newest execution. `?entrypoint=<name>` picks the newest execution of that entrypoint, `?execution=<jobName>` pins one run (job names are listed in `status.executions`).
+- `?container=code-loader` returns the init container's log (bad `INDEX_URL`, missing artifact) instead of the main container's. Default is the main container.
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  'http://localhost:8082/monitor/v1/apps/etl/logs?entrypoint=nightly'
+```
+
+```json
+{
+  "appName": "etl",
+  "type": "job",
+  "entrypoint": "nightly",
+  "execution": "etl-261020-020000-nightly-0",
+  "podName": "etl-261020-020000-nightly-0-abcde",
+  "container": "job",
+  "lines": ["extracting...", "done"]
+}
+```
+
+`404` when the app has no matching execution/deployment, or when a finished execution's Job already expired (`spec.executionTTLSeconds`, default 24h) — its outcome and failure message remain in `status.executions`. `400` for an invalid `container`.
 
 ---
 

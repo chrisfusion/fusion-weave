@@ -33,6 +33,7 @@ func RegisterRoutes(r chi.Router, cfg Config) {
 	evts := handlers.NewEventsHandler(b)
 	deps := handlers.NewDeploymentsHandler(b)
 	stats := handlers.NewStatsHandler(b)
+	appLogs := handlers.NewAppLogsHandler(b)
 
 	r.Get("/runs", runs.List)
 	r.Get("/runs/{name}", runs.Get)
@@ -40,6 +41,7 @@ func RegisterRoutes(r chi.Router, cfg Config) {
 	r.Get("/runs/{name}/jobs/{jobName}", jobs.Get)
 	r.Get("/runs/{name}/steps/{step}/logs", logs.Get)
 	r.Get("/runs/{name}/events", evts.ListForRun)
+	r.Get("/apps/{name}/logs", appLogs.Get)
 	r.Get("/chains/{name}/deployments", deps.List)
 	r.Get("/stats/runs", stats.RunStats)
 	r.Get("/stats/chains/{name}", stats.ChainStats)

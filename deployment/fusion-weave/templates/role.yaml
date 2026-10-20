@@ -19,6 +19,8 @@ rules:
       - weavetriggers/status
       - weaveruns
       - weaveruns/status
+      - weaveapps
+      - weaveapps/status
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["batch"]
     resources: ["jobs"]

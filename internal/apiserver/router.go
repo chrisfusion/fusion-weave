@@ -34,6 +34,7 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitori
 		r.Use(middleware.Auth(authCfg))
 		r.Use(middleware.RBAC)
 		registerCRUD(r, "/jobtemplates", handlers.NewJobTemplateHandler(c, cfg.Namespace))
+		registerCRUD(r, "/apps", handlers.NewAppHandler(c, cfg.Namespace))
 		registerCRUD(r, "/servicetemplates", handlers.NewServiceTemplateHandler(c, cfg.Namespace))
 		registerCRUD(r, "/chains", handlers.NewChainHandler(c, cfg.Namespace))
 		allowedImages := imagepolicy.ParsePrefixes(cfg.AllowedImagePrefixes)

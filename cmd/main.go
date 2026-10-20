@@ -254,6 +254,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// WeaveApp: single service/job apps. Own cron scheduler and panic channel,
+	// isolated from the WeaveTrigger schedulers.
+	appPanicCh := make(chan trigger.TriggerPanic, 64)
+	appCronScheduler := trigger.NewCronScheduler(appPanicCh)
+	defer appCronScheduler.Stop()
+	appReconciler := controller.NewWeaveAppReconciler(mgr.GetClient(), mgr.GetScheme(), appCronScheduler, appPanicCh)
+	appReconciler.KubeClient = kubeClient
+	appReconciler.SecurityDefaults = securityDefaults
+	appReconciler.FusionIndexURL = fusionIndexURL
+	appReconciler.LoaderImage = loaderImage
+	appReconciler.WritablePaths = writablePaths
+	appReconciler.Ingress = ingressCfg
+	appReconciler.CodeSourcePollInterval = codePollInterval
+	appReconciler.ExternalAuthServiceAccounts = externalAuthServiceAccounts
+	appReconciler.ExternalAuthOIDCSecrets = externalAuthOIDCSecrets
+	appReconciler.ExternalAuthDefaultTTL = externalAuthDefaultTTL
+	appReconciler.ExternalAuthSAAudience = externalAuthSAAudience
+	if err := appReconciler.SetupWithManager(mgr); err != nil {
+		logger.Error(err, "unable to set up WeaveApp controller")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		logger.Error(err, "unable to set up health check")
 		os.Exit(1)

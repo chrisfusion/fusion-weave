@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
@@ -73,83 +74,30 @@ func (h *LogsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var pod corev1.Pod
-	var containerName string
-
+	var (
+		pod           *corev1.Pod
+		containerName string
+		err           error
+	)
 	switch {
 	case jobName != "":
-		podList, err := h.KubeClient.CoreV1().Pods(h.Namespace).List(r.Context(), metav1.ListOptions{
-			LabelSelector: "job-name=" + jobName,
-		})
-		if err != nil {
-			internalError(w, r, err)
-			return
-		}
-		if len(podList.Items) == 0 {
-			writeError(w, http.StatusNotFound, "no pods found for step")
-			return
-		}
-		sort.Slice(podList.Items, func(i, j int) bool {
-			return podList.Items[i].CreationTimestamp.After(podList.Items[j].CreationTimestamp.Time)
-		})
-		pod = podList.Items[0]
+		pod, err = h.podForJob(r.Context(), jobName)
 		containerName = "job"
-
 	case deploymentName != "":
-		deploy, err := h.KubeClient.AppsV1().Deployments(h.Namespace).Get(r.Context(), deploymentName, metav1.GetOptions{})
-		if err != nil {
-			handleGetErr(w, r, err)
-			return
-		}
-		selector, err := metav1.LabelSelectorAsSelector(deploy.Spec.Selector)
-		if err != nil {
-			internalError(w, r, err)
-			return
-		}
-		podList, err := h.KubeClient.CoreV1().Pods(h.Namespace).List(r.Context(), metav1.ListOptions{
-			LabelSelector: selector.String(),
-		})
-		if err != nil {
-			internalError(w, r, err)
-			return
-		}
-		if len(podList.Items) == 0 {
-			writeError(w, http.StatusNotFound, "no pods found for deployment")
-			return
-		}
-		pod = pickBestPod(podList.Items)
-		containerName = deploy.Spec.Template.Spec.Containers[0].Name
-
+		pod, containerName, err = h.podForDeployment(r.Context(), deploymentName)
 	default:
 		writeError(w, http.StatusNotFound, "step not found or has no associated job")
 		return
 	}
-
-	// Fetch the log snapshot with a bounded timeout.
-	tailLines := int64(h.MaxLogLines)
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	stream, err := h.KubeClient.CoreV1().Pods(h.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		Container: containerName,
-		TailLines: &tailLines,
-	}).Stream(ctx)
 	if err != nil {
-		internalError(w, r, err)
-		return
-	}
-	defer stream.Close()
-
-	// Read with a 4 MiB safety cap.
-	raw, err := io.ReadAll(io.LimitReader(stream, 4<<20))
-	if err != nil {
-		internalError(w, r, err)
+		h.writePodErr(w, r, err)
 		return
 	}
 
-	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		lines = []string{}
+	lines, err := h.tailLogs(r.Context(), pod.Name, containerName)
+	if err != nil {
+		internalError(w, r, err)
+		return
 	}
 
 	resp := LogResponse{
@@ -160,19 +108,13 @@ func (h *LogsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Cache.Set(key, resp)
 
-	// Publish to the sink asynchronously — fire-and-forget.
-	// Use context.Background() so the publish is not cancelled when the HTTP
-	// response returns.
-	go func() {
-		snap := logsink.LogSnapshot{
-			RunName:   runName,
-			StepName:  stepName,
-			PodName:   pod.Name,
-			Lines:     lines,
-			FetchedAt: time.Now(),
-		}
-		_ = h.Sink.Publish(context.Background(), snap)
-	}()
+	h.publishSnapshot(logsink.LogSnapshot{
+		RunName:   runName,
+		StepName:  stepName,
+		PodName:   pod.Name,
+		Lines:     lines,
+		FetchedAt: time.Now(),
+	})
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -189,4 +131,93 @@ func pickBestPod(pods []corev1.Pod) corev1.Pod {
 		return pods[i].CreationTimestamp.After(pods[j].CreationTimestamp.Time)
 	})
 	return pods[0]
+}
+
+// errNoPods reports that the Job/Deployment exists but has no pods (e.g. the Job
+// was garbage-collected by its TTL, or the pods have not been created yet).
+type errNoPods struct{ what string }
+
+func (e errNoPods) Error() string { return "no pods found for " + e.what }
+
+// writePodErr maps podFor* errors to HTTP responses.
+func (b *Base) writePodErr(w http.ResponseWriter, r *http.Request, err error) {
+	var np errNoPods
+	if errors.As(err, &np) {
+		writeError(w, http.StatusNotFound, np.Error())
+		return
+	}
+	handleGetErr(w, r, err)
+}
+
+// podForJob returns the most recently created pod of a batch Job.
+func (b *Base) podForJob(ctx context.Context, jobName string) (*corev1.Pod, error) {
+	podList, err := b.KubeClient.CoreV1().Pods(b.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "job-name=" + jobName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(podList.Items) == 0 {
+		return nil, errNoPods{what: "step"}
+	}
+	sort.Slice(podList.Items, func(i, j int) bool {
+		return podList.Items[i].CreationTimestamp.After(podList.Items[j].CreationTimestamp.Time)
+	})
+	return &podList.Items[0], nil
+}
+
+// podForDeployment returns the best pod of a Deployment and its first container's name.
+func (b *Base) podForDeployment(ctx context.Context, deploymentName string) (*corev1.Pod, string, error) {
+	deploy, err := b.KubeClient.AppsV1().Deployments(b.Namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		return nil, "", err
+	}
+	selector, err := metav1.LabelSelectorAsSelector(deploy.Spec.Selector)
+	if err != nil {
+		return nil, "", err
+	}
+	podList, err := b.KubeClient.CoreV1().Pods(b.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector.String(),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if len(podList.Items) == 0 {
+		return nil, "", errNoPods{what: "deployment"}
+	}
+	pod := pickBestPod(podList.Items)
+	return &pod, deploy.Spec.Template.Spec.Containers[0].Name, nil
+}
+
+// tailLogs fetches the last MaxLogLines lines of one container as a snapshot,
+// with a bounded timeout and a 4 MiB safety cap.
+func (b *Base) tailLogs(ctx context.Context, podName, container string) ([]string, error) {
+	tailLines := int64(b.MaxLogLines)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	stream, err := b.KubeClient.CoreV1().Pods(b.Namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Container: container,
+		TailLines: &tailLines,
+	}).Stream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(stream, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = []string{}
+	}
+	return lines, nil
+}
+
+// publishSnapshot hands a snapshot to the log sink without blocking the response.
+// context.Background() so the publish is not cancelled when the HTTP response returns.
+func (b *Base) publishSnapshot(snap logsink.LogSnapshot) {
+	go func() { _ = b.Sink.Publish(context.Background(), snap) }()
 }

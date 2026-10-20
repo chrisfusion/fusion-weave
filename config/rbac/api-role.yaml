@@ -17,6 +17,8 @@ rules:
       - weavetriggers/status
       - weaveruns
       - weaveruns/status
+      - weaveapps
+      - weaveapps/status
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Secrets are listed to resolve API key credentials (label selector: fusion-platform.io/api-key=true).
   - apiGroups: [""]

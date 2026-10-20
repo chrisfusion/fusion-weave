@@ -23,6 +23,8 @@ rules:
       - weavetriggers/status
       - weaveruns
       - weaveruns/status
+      - weaveapps
+      - weaveapps/status
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   {{- if $apiAuth.saAuthEnabled }}
   # SA auth — get the calling ServiceAccount to read its fusion-platform.io/role label.
