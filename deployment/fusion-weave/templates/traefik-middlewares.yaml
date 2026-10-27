@@ -1,0 +1,20 @@
+{{- $traefik := (.Values.ingress | default dict).traefik | default dict -}}
+{{- /* Skipped when the Traefik Middleware CRD is absent (e.g. ingress-nginx clusters),
+       unless skipCapabilityCheck forces rendering (helm template without a cluster). */ -}}
+{{- if or $traefik.skipCapabilityCheck (.Capabilities.APIVersions.Has "traefik.io/v1alpha1/Middleware") }}
+{{- range $name, $spec := $traefik.middlewares }}
+---
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Referenced from Ingress annotations as
+# traefik.ingress.kubernetes.io/router.middlewares: {{ $.Release.Namespace }}-{{ $name }}@kubernetescrd
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "fusion-weave.labels" $ | nindent 4 }}
+spec:
+  {{- toYaml $spec | nindent 2 }}
+{{- end }}
+{{- end }}

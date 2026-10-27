@@ -245,6 +245,9 @@ func validateAppImages(spec *weavev1alpha1.WeaveAppSpec, allowed []string) strin
 
 func validateAppIngress(svc *weavev1alpha1.WeaveAppService, hostSuffix string) string {
 	if svc.IngressName == "" && svc.Ingress == nil {
+		if len(svc.IngressAnnotations) > 0 {
+			return "service.ingressAnnotations requires service.ingressName or service.ingress"
+		}
 		return ""
 	}
 	if svc.IngressName != "" && svc.Ingress != nil {
@@ -272,6 +275,16 @@ func validateAppIngress(svc *weavev1alpha1.WeaveAppService, hostSuffix string) s
 		}
 	}
 	return ""
+}
+
+// overlayAppIngressAnnotations layers the runner-type annotations
+// (ingress.runnerAnnotations[metadata runner.type]) and then the app's own
+// service.ingressAnnotations onto the instance-wide ones; later layers win.
+func overlayAppIngressAnnotations(ing *networkingv1.Ingress, cfg deploybuilder.IngressConfig, meta *indexclient.AppMetadata, svc *weavev1alpha1.WeaveAppService) {
+	if meta != nil && meta.Runner.Type != "" {
+		ing.Annotations = mergeStringMaps(ing.Annotations, cfg.RunnerAnnotations[meta.Runner.Type])
+	}
+	ing.Annotations = mergeStringMaps(ing.Annotations, svc.IngressAnnotations)
 }
 
 // ingressSpecFor expands the ingressName shorthand or the full ingress block
@@ -412,6 +425,7 @@ func (r *WeaveAppReconciler) reconcileService(ctx context.Context, app *weavev1a
 		if meta != nil && meta.Ingress.Path != "" && len(ing.Spec.Rules) > 0 {
 			ing.Spec.Rules[0].HTTP.Paths[0].Path = indexclient.NormalizeIngressPath(meta.Ingress.Path)
 		}
+		overlayAppIngressAnnotations(ing, r.Ingress, meta, app.Spec.Service)
 		ing.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 		if err := upsertIngress(ctx, r.Client, ing); err != nil {
 			return ctrl.Result{}, fmt.Errorf("upsert ingress %q: %w", ing.Name, err)

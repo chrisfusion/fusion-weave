@@ -759,3 +759,61 @@ func TestWeaveAppImagePolicy_RejectedImageNeverLaunchesJob(t *testing.T) {
 		t.Fatalf("no job may run with a rejected image, got %d", n)
 	}
 }
+
+func TestWeaveAppService_IngressAnnotationsExtendAndOverrideInstanceWide(t *testing.T) {
+	app := serviceApp("site")
+	app.Spec.Service.IngressAnnotations = map[string]string{
+		"traefik.ingress.kubernetes.io/router.middlewares": "fusion-headers@kubernetescrd",
+		"shared": "app",
+	}
+	r := newAppReconciler(t, app)
+	r.Ingress.Annotations = map[string]string{"shared": "instance", "cert-manager.io/cluster-issuer": "le"}
+	reconcileApp(t, r, "site")
+	ing := getAppIngress(t, r, "site-app")
+
+	want := map[string]string{
+		"traefik.ingress.kubernetes.io/router.middlewares": "fusion-headers@kubernetescrd",
+		"shared":                         "app",
+		"cert-manager.io/cluster-issuer": "le",
+	}
+	for k, v := range want {
+		if ing.Annotations[k] != v {
+			t.Errorf("annotation %s = %q, want %q (all: %+v)", k, ing.Annotations[k], v, ing.Annotations)
+		}
+	}
+}
+
+func TestOverlayAppIngressAnnotations_LayerOrder(t *testing.T) {
+	cfg := deploybuilder.IngressConfig{RunnerAnnotations: map[string]map[string]string{
+		"streamlit": {"timeout": "runner", "runner-only": "x"},
+		"fastapi":   {"other": "y"},
+	}}
+	svc := &weavev1alpha1.WeaveAppService{IngressAnnotations: map[string]string{"timeout": "app"}}
+	meta := &indexclient.AppMetadata{Runner: indexclient.AppRunner{Type: "streamlit"}}
+
+	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"timeout": "instance", "base": "b"}}}
+	overlayAppIngressAnnotations(ing, cfg, meta, svc)
+	if ing.Annotations["timeout"] != "app" || ing.Annotations["runner-only"] != "x" || ing.Annotations["base"] != "b" {
+		t.Errorf("annotations: %+v", ing.Annotations)
+	}
+	if _, ok := ing.Annotations["other"]; ok {
+		t.Errorf("another runner type's annotations leaked: %+v", ing.Annotations)
+	}
+
+	// No metadata (no codeSource): only the app's own annotations apply.
+	ing = &networkingv1.Ingress{}
+	overlayAppIngressAnnotations(ing, cfg, nil, svc)
+	if len(ing.Annotations) != 1 || ing.Annotations["timeout"] != "app" {
+		t.Errorf("annotations without metadata: %+v", ing.Annotations)
+	}
+}
+
+func TestWeaveAppService_IngressAnnotationsWithoutIngressRejected(t *testing.T) {
+	app := serviceApp("site")
+	app.Spec.Service.IngressName = ""
+	app.Spec.Service.IngressAnnotations = map[string]string{"a": "b"}
+	r := newAppReconciler(t)
+	if msg := r.validate(app); !strings.Contains(msg, "ingressAnnotations requires") {
+		t.Fatalf("got %q", msg)
+	}
+}

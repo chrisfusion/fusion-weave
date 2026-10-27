@@ -73,6 +73,15 @@ type WeaveAppService struct {
 	// +optional
 	Ingress *WeaveAppIngress `json:"ingress,omitempty"`
 
+	// IngressAnnotations fine-tune this app's Ingress for the cluster's
+	// controller (e.g. traefik.ingress.kubernetes.io/* or
+	// nginx.ingress.kubernetes.io/*). They extend, and on a key collision
+	// override, the instance-wide ingress.annotations and the runner-type
+	// ingress.runnerAnnotations. Additive: a key removed here stays on an
+	// existing Ingress. Requires ingressName or ingress.
+	// +optional
+	IngressAnnotations map[string]string `json:"ingressAnnotations,omitempty"`
+
 	// LivenessProbe, ReadinessProbe and StartupProbe configure container probes.
 	// +optional
 	LivenessProbe *corev1.Probe `json:"livenessProbe,omitempty"`

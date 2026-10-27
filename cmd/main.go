@@ -134,21 +134,27 @@ func main() {
 	}
 
 	ingressHostSuffix := os.Getenv("INGRESS_HOST_SUFFIX")
-	ingressAnnotations, err := parseStringMapEnv("INGRESS_ANNOTATIONS")
+	ingressAnnotations, err := parseJSONMapEnv[string]("INGRESS_ANNOTATIONS")
 	if err != nil {
 		logger.Error(err, "invalid ingress configuration")
 		os.Exit(1)
 	}
-	ingressLabels, err := parseStringMapEnv("INGRESS_LABELS")
+	ingressLabels, err := parseJSONMapEnv[string]("INGRESS_LABELS")
+	if err != nil {
+		logger.Error(err, "invalid ingress configuration")
+		os.Exit(1)
+	}
+	ingressRunnerAnnotations, err := parseJSONMapEnv[map[string]string]("INGRESS_RUNNER_ANNOTATIONS")
 	if err != nil {
 		logger.Error(err, "invalid ingress configuration")
 		os.Exit(1)
 	}
 	ingressCfg := deploybuilder.IngressConfig{
-		HostSuffix:  ingressHostSuffix,
-		Annotations: ingressAnnotations,
-		Labels:      ingressLabels,
-		TLS:         os.Getenv("INGRESS_TLS_ENABLED") == "true",
+		HostSuffix:        ingressHostSuffix,
+		Annotations:       ingressAnnotations,
+		Labels:            ingressLabels,
+		TLS:               os.Getenv("INGRESS_TLS_ENABLED") == "true",
+		RunnerAnnotations: ingressRunnerAnnotations,
 	}
 
 	if err := (&controller.WeaveServiceTemplateReconciler{
@@ -293,16 +299,17 @@ func main() {
 	}
 }
 
-// parseStringMapEnv reads a JSON object of string values from env var name.
-// An unset or empty variable yields a nil map.
-func parseStringMapEnv(name string) (map[string]string, error) {
+// parseJSONMapEnv reads a JSON object from env var name into a map of V
+// (string values, or nested string maps). An unset or empty variable yields
+// a nil map.
+func parseJSONMapEnv[V any](name string) (map[string]V, error) {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
 		return nil, nil
 	}
-	var m map[string]string
+	var m map[string]V
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return nil, fmt.Errorf("%s must be a JSON object of string values: %w", name, err)
+		return nil, fmt.Errorf("%s must be a JSON object of %T values: %w", name, *new(V), err)
 	}
 	return m, nil
 }

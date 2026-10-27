@@ -66,6 +66,8 @@ spec:
             # Optional instance-wide ingress config (JSON objects / "true"):
             # - name: INGRESS_ANNOTATIONS
             #   value: '{"cert-manager.io/cluster-issuer":"letsencrypt-prod"}'
+            # - name: INGRESS_RUNNER_ANNOTATIONS   # per metadata.yaml runner.type, WeaveApps only
+            #   value: '{"streamlit":{"nginx.ingress.kubernetes.io/proxy-read-timeout":"3600"}}'
             # - name: INGRESS_LABELS
             #   value: '{"env":"prod"}'
             # - name: INGRESS_TLS_ENABLED

@@ -99,6 +99,10 @@ spec:
             - name: INGRESS_ANNOTATIONS
               value: {{ $ingress.annotations | toJson | quote }}
             {{- end }}
+            {{- if $ingress.runnerAnnotations }}
+            - name: INGRESS_RUNNER_ANNOTATIONS
+              value: {{ $ingress.runnerAnnotations | toJson | quote }}
+            {{- end }}
             {{- if $ingress.labels }}
             - name: INGRESS_LABELS
               value: {{ $ingress.labels | toJson | quote }}

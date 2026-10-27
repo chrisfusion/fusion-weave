@@ -257,6 +257,38 @@ ingress:
   # Example: annotations: {cert-manager.io/cluster-issuer: letsencrypt-prod}
   annotations: {}
   labels: {}
+  # runnerAnnotations are added to a WeaveApp's Ingress by the artifact's
+  # metadata.yaml runner.type, on top of annotations — the place for
+  # controller-specific (Traefik / ingress-nginx) tuning a runner type needs.
+  # A WeaveApp's own spec.service.ingressAnnotations override both. Additive:
+  # nothing preconfigured is removed. JSON-encoded into INGRESS_RUNNER_ANNOTATIONS.
+  # Example (ingress-nginx, Streamlit websockets):
+  #   runnerAnnotations:
+  #     streamlit:
+  #       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  #       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  runnerAnnotations: {}
+  # traefik.middlewares renders one Traefik Middleware (traefik.io/v1alpha1) per
+  # entry in the release namespace: key = object name, value = its spec verbatim
+  # (headers, stripPrefix, redirectScheme, ...). Ingresses reference one via the
+  # annotation traefik.ingress.kubernetes.io/router.middlewares:
+  # "<release-namespace>-<name>@kubernetescrd" (e.g. in runnerAnnotations above).
+  # Rendered only when the cluster has the Middleware CRD, so leaving entries here
+  # on an ingress-nginx cluster is harmless. skipCapabilityCheck forces rendering
+  # where Helm cannot see the cluster's CRDs (helm template, offline rendering).
+  # Example (Streamlit behind Traefik):
+  #   traefik:
+  #     middlewares:
+  #       streamlit:
+  #         headers:
+  #           customRequestHeaders:
+  #             X-Forwarded-Proto: https
+  #   runnerAnnotations:
+  #     streamlit:
+  #       traefik.ingress.kubernetes.io/router.middlewares: fusion-streamlit@kubernetescrd
+  traefik:
+    middlewares: {}
+    skipCapabilityCheck: false
   # tls.enabled adds a tls section to every Ingress: same hosts as the rules,
   # secretName "<ingressName>-tls" (filled by e.g. cert-manager via the annotation
   # above). A template's explicit spec.ingress.tlsSecretName takes precedence.
