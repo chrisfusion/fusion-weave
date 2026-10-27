@@ -115,6 +115,60 @@ func (h *AppHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	h.mergePatch(w, r, &weavev1alpha1.WeaveApp{})
 }
 
+// fireRequest is the body of POST /apps/{name}/fire.
+type fireRequest struct {
+	Entrypoint string `json:"entrypoint"`
+}
+
+// Fire launches one entrypoint of a job app once by setting the fire annotation
+// the operator consumes. Unlike a raw PATCH it only touches that annotation, so
+// it can be granted separately from write access (BFF weave:apps:fire), and it
+// answers right away for a service app, an unknown entrypoint (400) or an
+// execution that is still running (409) instead of the operator silently
+// skipping the fire.
+func (h *AppHandler) Fire(w http.ResponseWriter, r *http.Request) {
+	name := nameFromURL(w, r)
+	if name == "" {
+		return
+	}
+	var req fireRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Entrypoint == "" {
+		writeError(w, http.StatusBadRequest, "entrypoint is required")
+		return
+	}
+	var obj weavev1alpha1.WeaveApp
+	if err := h.client.Get(r.Context(), types.NamespacedName{Namespace: h.namespace, Name: name}, &obj); err != nil {
+		handleGetErr(w, r, err)
+		return
+	}
+	if obj.Spec.Type != weavev1alpha1.WeaveAppTypeJob {
+		writeError(w, http.StatusBadRequest, "only job apps have entrypoints to fire")
+		return
+	}
+	if !obj.HasEntrypoint(req.Entrypoint) {
+		writeError(w, http.StatusBadRequest, "unknown entrypoint "+req.Entrypoint)
+		return
+	}
+	if obj.HasRunningExecution(req.Entrypoint) {
+		writeError(w, http.StatusConflict, "previous execution of "+req.Entrypoint+" is still running")
+		return
+	}
+	patch := client.MergeFrom(obj.DeepCopy())
+	if obj.Annotations == nil {
+		obj.Annotations = map[string]string{}
+	}
+	obj.Annotations[weavev1alpha1.WeaveAppFireAnnotation] = req.Entrypoint
+	if err := h.client.Patch(r.Context(), &obj, patch); err != nil {
+		internalError(w, r, err, "kind", "WeaveApp", "name", name)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, obj)
+}
+
 func (h *AppHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	name := nameFromURL(w, r)
 	if name == "" {

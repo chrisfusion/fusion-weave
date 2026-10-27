@@ -7,7 +7,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.6.2] — 2026-10-27
+
 ### Added
+- `POST /api/v1/apps/{name}/fire` (`{entrypoint}`, editor): fires one entrypoint of a job WeaveApp via the `fusion-platform.io/fire` annotation, answering `400` (service app, unknown entrypoint), `404` or `409` (execution still running) right away instead of the operator skipping silently. Touches only the annotation, so a gateway can grant it separately from write access (fusion-bff `weave:apps:fire`). `WeaveAppFireAnnotation`, `WeaveApp.HasEntrypoint`/`HasRunningExecution` now live in `api/v1alpha1`, shared by the handler and the reconciler.
 - WeaveApp `spec.service.ingressAnnotations`: per-app Ingress annotations (Traefik / ingress-nginx tuning) that extend and override the instance-wide ones; rejected without `ingressName`/`ingress`. Additive on existing Ingresses, nothing preconfigured is removed.
 - Helm `ingress.runnerAnnotations` (env `INGRESS_RUNNER_ANNOTATIONS`, JSON `{runnerType: {key: value}}`): annotations added to a WeaveApp's Ingress by the artifact's `metadata.yaml` `runner.type` (e.g. `streamlit`). Order: `ingress.annotations` → `runnerAnnotations[runner.type]` → app `ingressAnnotations`, later wins. WeaveApps only; chain/run deploy steps are unchanged.
 - Helm `ingress.traefik.middlewares` (`templates/traefik-middlewares.yaml`): renders one Traefik `Middleware` (`traefik.io/v1alpha1`) per entry in the release namespace (key = name, value = spec verbatim), referenced via `traefik.ingress.kubernetes.io/router.middlewares: <ns>-<name>@kubernetescrd`. Rendered only when the cluster has the Middleware CRD, so ingress-nginx installs are unaffected; `ingress.traefik.skipCapabilityCheck` forces rendering for `helm template`/offline rendering.

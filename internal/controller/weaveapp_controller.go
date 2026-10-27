@@ -42,7 +42,7 @@ import (
 const (
 	// FireAnnotation on a WeaveApp fires the named entrypoint once on demand.
 	// The reconciler consumes (removes) it.
-	FireAnnotation = "fusion-platform.io/fire"
+	FireAnnotation = weavev1alpha1.WeaveAppFireAnnotation
 
 	// AppLabel / EntrypointLabel mark every Job a WeaveApp creates.
 	AppLabel        = "fusion-platform.io/app"
@@ -552,12 +552,7 @@ func (r *WeaveAppReconciler) reconcileJob(ctx context.Context, app *weavev1alpha
 }
 
 func hasRunningExecution(app *weavev1alpha1.WeaveApp, entrypoint string) bool {
-	for _, e := range app.Status.Executions {
-		if e.Entrypoint == entrypoint && e.Phase == weavev1alpha1.WeaveAppExecutionRunning {
-			return true
-		}
-	}
-	return false
+	return app.HasRunningExecution(entrypoint)
 }
 
 func hasAnyRunningExecution(app *weavev1alpha1.WeaveApp) bool {

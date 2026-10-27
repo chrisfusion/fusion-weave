@@ -1430,7 +1430,7 @@ A single service or job. One object owns its Deployment/Service/Ingress (type `s
 
 Image policy: when `ALLOWED_IMAGE_PREFIXES` is configured (comma-separated, Helm `imageOverrides.allowedPrefixes`), `spec.image` and a custom `spec.codeSource.loaderImage` must carry an explicit non-`latest` tag or a digest and start with an allowed prefix. `POST`/`PUT` return `400` otherwise. `PATCH`, `kubectl` and Flux bypass the API, so the operator re-checks: the app gets `status.phase: Invalid` with the reason in `status.validationMessage`, no new execution starts, and an already running Deployment is left untouched. With the list empty (default) apps are unrestricted. A codeSource app's runner image is subject to the same list.
 
-Fire an entrypoint on demand: `PATCH /api/v1/apps/{name}` with `{"metadata":{"annotations":{"fusion-platform.io/fire":"<entrypoint>"}}}` (consumed by the operator; a run of the same entrypoint still active is skipped).
+Fire an entrypoint on demand: `POST /api/v1/apps/{name}/fire` with `{"entrypoint":"<name>"}` → `202` with the app; `400` for a missing/unknown entrypoint or a service app, `404` for an unknown app, `409` while an execution of that entrypoint is still running. It only sets the annotation below, so a gateway can permit it separately from write access. The raw form still works: `PATCH /api/v1/apps/{name}` with `{"metadata":{"annotations":{"fusion-platform.io/fire":"<entrypoint>"}}}` (consumed by the operator; a run of the same entrypoint still active is skipped silently).
 
 ### Examples
 
