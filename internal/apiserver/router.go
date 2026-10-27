@@ -40,9 +40,12 @@ func newRouter(cfg Config, c client.Client, authCfg auth.Config, monCfg monitori
 		appHandler := handlers.NewAppHandler(c, cfg.Namespace, allowedImages)
 		registerCRUD(r, "/apps", appHandler)
 		r.Post("/apps/{name}/fire", appHandler.(*handlers.AppHandler).Fire)
+		r.Get("/apps/{name}/executions", appHandler.(*handlers.AppHandler).Executions)
 		registerCRUD(r, "/triggers", handlers.NewTriggerHandler(c, cfg.Namespace, allowedImages))
 		runHandler := handlers.NewRunHandler(c, cfg.Namespace, allowedImages)
+		// Static /runs/facets wins over /runs/{name} in chi, so it is safe to register after.
 		registerCRUD(r, "/runs", runHandler)
+		r.Get("/runs/facets", runHandler.(*handlers.RunHandler).Facets)
 		r.Post("/runs/{name}/stop", runHandler.(*handlers.RunHandler).Stop)
 		r.Post("/runs/{name}/image", runHandler.(*handlers.RunHandler).SetImage)
 

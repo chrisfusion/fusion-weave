@@ -4,9 +4,12 @@
 package handlers
 
 import (
+	"cmp"
 	"encoding/json"
 	"net/http"
+	"time"
 
+	"github.com/chrisfusion/fusion-shared/listquery"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,13 +38,133 @@ func (h *RunHandler) validateImageOverrides(run *weavev1alpha1.WeaveRun) error {
 	return imagepolicy.ValidateList(run.Spec.ImageOverrides, h.allowedImagePrefixes)
 }
 
+var runListSpec = listquery.Spec{SortKeys: []string{"name", "created", "started", "completed", "duration"}, DefaultSort: "-created"}
+
+// runFields: the since/until window applies to the start time, falling back to creation
+// for runs that have not started.
+func runFields(now time.Time) listquery.Fields[weavev1alpha1.WeaveRun] {
+	return objectFields(runTime, map[string]func(a, b *weavev1alpha1.WeaveRun) int{
+		"started": func(a, b *weavev1alpha1.WeaveRun) int {
+			return listquery.CompareTime(timeOf(a.Status.StartTime), timeOf(b.Status.StartTime))
+		},
+		"completed": func(a, b *weavev1alpha1.WeaveRun) int {
+			return listquery.CompareTime(timeOf(a.Status.CompletionTime), timeOf(b.Status.CompletionTime))
+		},
+		"duration": func(a, b *weavev1alpha1.WeaveRun) int {
+			return cmp.Compare(runDuration(a, now), runDuration(b, now))
+		},
+	})
+}
+
+// runFilter holds the run-specific list parameters, shared by List and Facets.
+type runFilter struct {
+	phases, chains, triggers listquery.Set
+}
+
+func parseRunFilter(w http.ResponseWriter, r *http.Request) (runFilter, bool) {
+	q := r.URL.Query()
+	phases, err := listquery.OneOf(q, "phase", enumStrings(weavev1alpha1.RunPhasePending, weavev1alpha1.RunPhaseRunning,
+		weavev1alpha1.RunPhaseSucceeded, weavev1alpha1.RunPhaseFailed, weavev1alpha1.RunPhaseStopped)...)
+	if badParam(w, err) {
+		return runFilter{}, false
+	}
+	return runFilter{phases: phases, chains: listquery.Any(q, "chain"), triggers: listquery.Any(q, "trigger")}, true
+}
+
+func (f runFilter) match(run *weavev1alpha1.WeaveRun) bool {
+	return f.phases.Match(runPhase(run)) && f.chains.Match(run.Spec.ChainRef.Name) && f.triggers.Match(runTrigger(run))
+}
+
+// List supports the shared list parameters plus phase, chain and trigger.
 func (h *RunHandler) List(w http.ResponseWriter, r *http.Request) {
+	p, opts, ok := h.parseList(w, r, runListSpec)
+	if !ok {
+		return
+	}
+	f, ok := parseRunFilter(w, r)
+	if !ok {
+		return
+	}
 	var list weavev1alpha1.WeaveRunList
-	if err := h.client.List(r.Context(), &list, client.InNamespace(h.namespace)); err != nil {
+	if err := h.client.List(r.Context(), &list, opts...); err != nil {
 		internalError(w, r, err, "kind", "WeaveRun")
 		return
 	}
+	page := listquery.Apply(list.Items, p, runFields(time.Now()), f.match)
+	list.Items = page.Items
+	setPage(&list.ListMeta, page.Continue, page.Remaining)
 	writeJSON(w, http.StatusOK, list)
+}
+
+// runFacets counts the runs matching a filter, for the filter drop-downs of a GUI.
+type runFacets struct {
+	Total   int            `json:"total"`
+	Phase   map[string]int `json:"phase"`
+	Chain   map[string]int `json:"chain"`
+	Trigger map[string]int `json:"trigger"`
+	Source  map[string]int `json:"source"`
+}
+
+// Facets counts runs per phase, chain, trigger and source. It takes the same filters as
+// List (sort, limit and continue are accepted and ignored).
+func (h *RunHandler) Facets(w http.ResponseWriter, r *http.Request) {
+	p, opts, ok := h.parseList(w, r, runListSpec)
+	if !ok {
+		return
+	}
+	f, ok := parseRunFilter(w, r)
+	if !ok {
+		return
+	}
+	var list weavev1alpha1.WeaveRunList
+	if err := h.client.List(r.Context(), &list, opts...); err != nil {
+		internalError(w, r, err, "kind", "WeaveRun")
+		return
+	}
+	runs := listquery.Filter(list.Items, p, runFields(time.Now()), f.match)
+	writeJSON(w, http.StatusOK, runFacets{
+		Total:   len(runs),
+		Phase:   listquery.Count(runs, func(run *weavev1alpha1.WeaveRun) []string { return []string{runPhase(run)} }),
+		Chain:   listquery.Count(runs, func(run *weavev1alpha1.WeaveRun) []string { return []string{run.Spec.ChainRef.Name} }),
+		Trigger: listquery.Count(runs, func(run *weavev1alpha1.WeaveRun) []string { return []string{runTrigger(run)} }),
+		Source:  listquery.Count(runs, func(run *weavev1alpha1.WeaveRun) []string { return listquery.Sources(run.Labels) }),
+	})
+}
+
+// runPhase is the run's phase; a run the operator has not picked up yet counts as Pending.
+func runPhase(run *weavev1alpha1.WeaveRun) string {
+	if run.Status.Phase == "" {
+		return string(weavev1alpha1.RunPhasePending)
+	}
+	return string(run.Status.Phase)
+}
+
+// runTrigger is the name of the trigger that created the run ("" for manual runs).
+func runTrigger(run *weavev1alpha1.WeaveRun) string {
+	if run.Spec.TriggerRef == nil {
+		return ""
+	}
+	return run.Spec.TriggerRef.Name
+}
+
+// runTime is the start time, or the creation time for runs that have not started.
+func runTime(run *weavev1alpha1.WeaveRun) time.Time {
+	if run.Status.StartTime != nil {
+		return run.Status.StartTime.Time
+	}
+	return run.CreationTimestamp.Time
+}
+
+// runDuration is completion minus start; still-running runs count up to now, unstarted runs are 0.
+func runDuration(run *weavev1alpha1.WeaveRun, now time.Time) time.Duration {
+	if run.Status.StartTime == nil {
+		return 0
+	}
+	end := now
+	if run.Status.CompletionTime != nil {
+		end = run.Status.CompletionTime.Time
+	}
+	return end.Sub(run.Status.StartTime.Time)
 }
 
 func (h *RunHandler) Create(w http.ResponseWriter, r *http.Request) {

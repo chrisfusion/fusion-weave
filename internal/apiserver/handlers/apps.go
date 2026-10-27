@@ -6,7 +6,10 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
 
+	"github.com/chrisfusion/fusion-shared/listquery"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,13 +30,112 @@ func NewAppHandler(c client.Client, namespace string, allowedImagePrefixes []str
 	return &AppHandler{base: base{client: c, namespace: namespace}, allowedImagePrefixes: allowedImagePrefixes}
 }
 
+var appListSpec = listquery.Spec{SortKeys: []string{"name", "created", "lastExecution"}, DefaultSort: "name"}
+
+var appFields = objectFields(nil, map[string]func(a, b *weavev1alpha1.WeaveApp) int{
+	"lastExecution": func(a, b *weavev1alpha1.WeaveApp) int {
+		return listquery.CompareTime(lastExecutionStart(a), lastExecutionStart(b))
+	},
+})
+
+// List supports the shared list parameters plus type, phase, codeSource and running.
 func (h *AppHandler) List(w http.ResponseWriter, r *http.Request) {
+	p, opts, ok := h.parseList(w, r, appListSpec)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	appTypes, errT := listquery.OneOf(q, "type", enumStrings(weavev1alpha1.WeaveAppTypeService, weavev1alpha1.WeaveAppTypeJob)...)
+	phases, errP := listquery.OneOf(q, "phase", enumStrings(weavev1alpha1.WeaveAppPhasePending, weavev1alpha1.WeaveAppPhaseReady,
+		weavev1alpha1.WeaveAppPhaseRunning, weavev1alpha1.WeaveAppPhaseInvalid)...)
+	codeSource, errC := listquery.Bool(q, "codeSource")
+	running, errR := listquery.Bool(q, "running")
+	if badParam(w, errT, errP, errC, errR) {
+		return
+	}
+
 	var list weavev1alpha1.WeaveAppList
-	if err := h.client.List(r.Context(), &list, client.InNamespace(h.namespace)); err != nil {
+	if err := h.client.List(r.Context(), &list, opts...); err != nil {
 		internalError(w, r, err, "kind", "WeaveApp")
 		return
 	}
+	page := listquery.Apply(list.Items, p, appFields, func(a *weavev1alpha1.WeaveApp) bool {
+		return appTypes.Match(string(a.Spec.Type)) && phases.Match(string(a.Status.Phase)) &&
+			boolMatch(codeSource, a.Spec.CodeSource != nil) && boolMatch(running, anyExecutionRunning(a))
+	})
+	list.Items = page.Items
+	setPage(&list.ListMeta, page.Continue, page.Remaining)
 	writeJSON(w, http.StatusOK, list)
+}
+
+var executionListSpec = listquery.Spec{SortKeys: []string{"name", "started", "completed", "entrypoint"}, DefaultSort: "-started"}
+
+// executionFields: name is the execution's Job name, the time window applies to its start.
+var executionFields = listquery.Fields[weavev1alpha1.WeaveAppExecution]{
+	Name:   func(e *weavev1alpha1.WeaveAppExecution) string { return e.JobName },
+	Time:   func(e *weavev1alpha1.WeaveAppExecution) time.Time { return timeOf(e.StartTime) },
+	Labels: func(*weavev1alpha1.WeaveAppExecution) map[string]string { return nil },
+	Sort: map[string]func(a, b *weavev1alpha1.WeaveAppExecution) int{
+		"name": func(a, b *weavev1alpha1.WeaveAppExecution) int { return strings.Compare(a.JobName, b.JobName) },
+		"started": func(a, b *weavev1alpha1.WeaveAppExecution) int {
+			return listquery.CompareTime(timeOf(a.StartTime), timeOf(b.StartTime))
+		},
+		"completed": func(a, b *weavev1alpha1.WeaveAppExecution) int {
+			return listquery.CompareTime(timeOf(a.CompletionTime), timeOf(b.CompletionTime))
+		},
+		"entrypoint": func(a, b *weavev1alpha1.WeaveAppExecution) int { return strings.Compare(a.Entrypoint, b.Entrypoint) },
+	},
+}
+
+// Executions lists a job app's execution history (status.executions, the last 20) with the
+// shared list parameters (source does not apply) plus entrypoint and phase.
+func (h *AppHandler) Executions(w http.ResponseWriter, r *http.Request) {
+	name := nameFromURL(w, r)
+	if name == "" {
+		return
+	}
+	p, _, ok := h.parseList(w, r, executionListSpec)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	phases, err := listquery.OneOf(q, "phase", enumStrings(weavev1alpha1.WeaveAppExecutionRunning,
+		weavev1alpha1.WeaveAppExecutionSucceeded, weavev1alpha1.WeaveAppExecutionFailed)...)
+	if badParam(w, err) {
+		return
+	}
+	entrypoints := listquery.Any(q, "entrypoint")
+
+	var app weavev1alpha1.WeaveApp
+	if err := h.client.Get(r.Context(), types.NamespacedName{Namespace: h.namespace, Name: name}, &app); err != nil {
+		handleGetErr(w, r, err)
+		return
+	}
+	page := listquery.Apply(app.Status.Executions, p, executionFields, func(e *weavev1alpha1.WeaveAppExecution) bool {
+		return phases.Match(string(e.Phase)) && entrypoints.Match(e.Entrypoint)
+	})
+	writeJSON(w, http.StatusOK, newPagedList(page))
+}
+
+// lastExecutionStart is the start of the app's most recent execution (zero if none).
+func lastExecutionStart(a *weavev1alpha1.WeaveApp) time.Time {
+	var last time.Time
+	for _, e := range a.Status.Executions {
+		if t := timeOf(e.StartTime); t.After(last) {
+			last = t
+		}
+	}
+	return last
+}
+
+// anyExecutionRunning reports whether any entrypoint of the app is running.
+func anyExecutionRunning(a *weavev1alpha1.WeaveApp) bool {
+	for _, e := range a.Status.Executions {
+		if e.Phase == weavev1alpha1.WeaveAppExecutionRunning {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *AppHandler) Create(w http.ResponseWriter, r *http.Request) {

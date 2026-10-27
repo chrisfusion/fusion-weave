@@ -7,6 +7,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- Server-side filtering, sorting and pagination on `GET /api/v1/apps`, `/runs`, `/triggers`, `/batchtriggers` and `/kafkatriggers`: shared `q`, `since`/`until`, `source` (`gitops` = applied by Flux, or a `managed-by` value), `labelSelector`, `sort`, `limit`, `continue` (Kubernetes list shape: `metadata.continue`/`remainingItemCount`), plus per-resource filters — apps `type`/`phase`/`codeSource`/`running`, runs `phase`/`chain`/`trigger`, triggers `type`/`chain`/`paused`/`active`/`quarantined`. Parsing comes from `fusion-shared/listquery`; invalid values return `400`. Without parameters the lists are unchanged, except apps and triggers now come sorted by name and runs newest first.
+- `GET /api/v1/runs/facets`: run counts per phase, chain, trigger and source under the same filters, for GUI filter drop-downs.
+- `GET /api/v1/apps/{name}/executions`: filter (`phase`, `entrypoint`, `q` on the Job name, time window on the start), sort and page a job WeaveApp's `status.executions`.
+
+### Changed
+- `/batchtriggers` and `/kafkatriggers` lists share the `/triggers` list code (type fixed per endpoint).
+- New dependency `github.com/chrisfusion/fusion-shared` (vendored).
+
 ---
 
 ## [0.6.2] — 2026-10-27

@@ -73,7 +73,7 @@ All errors return JSON with the following shape:
 
 | Status | Meaning |
 |---|---|
-| `400` | Malformed JSON body or missing required field |
+| `400` | Malformed JSON body, missing required field, or invalid list query parameter |
 | `401` | Missing or invalid credentials |
 | `403` | Valid credentials but insufficient role |
 | `404` | Resource does not exist |
@@ -89,6 +89,42 @@ All errors return JSON with the following shape:
 
 ```
 Content-Type: application/merge-patch+json
+```
+
+---
+
+## List filtering, sorting and pagination
+
+`GET /api/v1/apps`, `/runs`, `/triggers`, `/batchtriggers`, `/kafkatriggers` (plus `/runs/facets` and `/apps/{name}/executions`) accept these optional query parameters. They are parsed by the shared `listquery` package of `fusion-shared`, so fusion-wizard's `GET /api/v1/runs` behaves the same.
+
+| Parameter | Meaning |
+|---|---|
+| `q` | Case-insensitive substring of the name (max 256 chars) |
+| `since` / `until` | Time window, `since` inclusive, `until` exclusive. RFC 3339 time or a duration back from now (`90m`, `24h`, `7d`). Which time a list uses is noted per endpoint; items without that time are left out while a window is set |
+| `source` | `gitops` (applied by Flux: label `kustomize.toolkit.fluxcd.io/name`, or `fusion-platform.io/managed-by=gitops`) or any `fusion-platform.io/managed-by` value (`manual`, `wizard`, ...). A wizard resource applied from a GitOps repo matches both `gitops` and `wizard` |
+| `labelSelector` | Kubernetes label selector, applied by the Kubernetes list call |
+| `sort` | A sort key of the endpoint; prefix `-` for descending. Ties are broken by name ascending |
+| `limit` | Page size, 1-500. Without it the whole filtered list is returned |
+| `continue` | Token from `metadata.continue` of the previous page; send the other parameters unchanged |
+
+- Multi-value filters accept repeated or comma-separated values and match any (`?phase=Failed,Stopped` = `?phase=Failed&phase=Stopped`). Different filters combine with AND.
+- Invalid values (unknown enum value, bad time, unknown sort key, bad selector or token) return `400` with the parameter name in `message`.
+- Pagination follows the Kubernetes list shape: while more items follow, `metadata.continue` and `metadata.remainingItemCount` are set; the last page has neither. Filtering happens before pagination. The API server lists without a cache, so a page reflects the state at the time of its request: items created or deleted between two pages can shift the offset.
+
+| Endpoint | Filters | Sort keys (default) | Time window field |
+|---|---|---|---|
+| `/apps` | `type` (`service`, `job`), `phase` (`Pending`, `Ready`, `Running`, `Invalid`), `codeSource` (bool), `running` (bool, any execution running) | `name`, `created`, `lastExecution` (`name`) | creation |
+| `/runs`, `/runs/facets` | `phase` (`Pending` incl. not yet reconciled, `Running`, `Succeeded`, `Failed`, `Stopped`), `chain`, `trigger` | `name`, `created`, `started`, `completed`, `duration` (`-created`) | `status.startTime`, else creation |
+| `/triggers`, `/batchtriggers`, `/kafkatriggers` | `type` (`OnDemand`, `Cron`, `Webhook`, `BatchCron`, `Kafka`), `chain`, `paused`, `active`, `quarantined` (bools) | `name`, `created`, `lastSchedule` (`name`) | creation |
+| `/apps/{name}/executions` | `phase` (`Running`, `Succeeded`, `Failed`), `entrypoint`; `q` searches the Job name; no `source`/`labelSelector` | `name`, `started`, `completed`, `entrypoint` (`-started`) | `startTime` |
+
+```bash
+# failed or stopped runs of chain etl in the last 24 hours, newest first, 50 per page
+curl -H "Authorization: Bearer $KEY" 'http://localhost:8082/api/v1/runs?phase=Failed,Stopped&chain=etl&since=24h&limit=50'
+# next page
+curl -H "Authorization: Bearer $KEY" 'http://localhost:8082/api/v1/runs?phase=Failed,Stopped&chain=etl&since=24h&limit=50&continue=<metadata.continue>'
+# job apps that came from a GitOps repo
+curl -H "Authorization: Bearer $KEY" 'http://localhost:8082/api/v1/apps?type=job&source=gitops'
 ```
 
 ---
@@ -780,7 +816,10 @@ GET /api/v1/triggers
 
 ```bash
 curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/triggers
+curl -H "Authorization: Bearer $KEY" 'http://localhost:8082/api/v1/triggers?type=Cron&quarantined=true'
 ```
+
+See [List filtering, sorting and pagination](#list-filtering-sorting-and-pagination).
 
 ### Create
 
@@ -872,7 +911,7 @@ The `jobs` string is YAML: a sequence of `job` entries, each with its own cron s
 GET /api/v1/batchtriggers
 ```
 
-Returns a `WeaveTriggerList` filtered to `type: BatchCron` — same item shape as `GET /api/v1/triggers`.
+Returns a `WeaveTriggerList` filtered to `type: BatchCron` — same item shape and [list parameters](#list-filtering-sorting-and-pagination) as `GET /api/v1/triggers`.
 
 ```bash
 curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/batchtriggers
@@ -1051,6 +1090,8 @@ GET /api/v1/kafkatriggers
 ```bash
 curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/kafkatriggers
 ```
+
+Same [list parameters](#list-filtering-sorting-and-pagination) as `GET /api/v1/triggers`.
 
 ### Create
 
@@ -1265,11 +1306,26 @@ GET /api/v1/runs
 curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/runs
 ```
 
-Filter by watching (client-side):
+Filter server-side (see [List filtering, sorting and pagination](#list-filtering-sorting-and-pagination)):
 
 ```bash
-curl -H "Authorization: Bearer $KEY" http://localhost:8082/api/v1/runs | \
-  jq '[.items[] | select(.status.phase == "Failed")]'
+curl -H "Authorization: Bearer $KEY" 'http://localhost:8082/api/v1/runs?phase=Failed&sort=-completed&limit=20'
+```
+
+### Facets
+
+```
+GET /api/v1/runs/facets
+```
+
+Counts runs per phase, chain, trigger and source for GUI filter drop-downs. Takes the same filters as `GET /api/v1/runs` and counts the runs matching all of them (`sort`, `limit`, `continue` are ignored). Runs without a trigger are not counted under `trigger`. A run literally named `facets` cannot be read with `GET /runs/{name}` (the static route wins).
+
+```json
+{"total": 42,
+ "phase":   {"Succeeded": 30, "Failed": 8, "Running": 4},
+ "chain":   {"etl": 25, "report": 17},
+ "trigger": {"nightly": 20},
+ "source":  {"gitops": 12, "manual": 30}}
 ```
 
 ### Create (manual run)
@@ -1432,6 +1488,8 @@ Image policy: when `ALLOWED_IMAGE_PREFIXES` is configured (comma-separated, Helm
 
 Fire an entrypoint on demand: `POST /api/v1/apps/{name}/fire` with `{"entrypoint":"<name>"}` → `202` with the app; `400` for a missing/unknown entrypoint or a service app, `404` for an unknown app, `409` while an execution of that entrypoint is still running. It only sets the annotation below, so a gateway can permit it separately from write access. The raw form still works: `PATCH /api/v1/apps/{name}` with `{"metadata":{"annotations":{"fusion-platform.io/fire":"<entrypoint>"}}}` (consumed by the operator; a run of the same entrypoint still active is skipped silently).
 
+List executions of a job app: `GET /api/v1/apps/{name}/executions` filters, sorts and pages `status.executions` (`?phase=Failed&entrypoint=nightly`, see [List filtering, sorting and pagination](#list-filtering-sorting-and-pagination)). Response: `{"metadata":{"continue":..., "remainingItemCount":...}, "items":[<execution>...]}`; `404` for an unknown app.
+
 ### Examples
 
 ```json
@@ -1466,7 +1524,8 @@ Responses: `201` on create, `409` if the name exists, `204` on delete; list/get/
 |---|---|---|---|
 | GET | `/healthz` | none | Liveness check |
 | GET | `/readyz` | none | Readiness check |
-| GET | `/api/v1/apps` | viewer | List all WeaveApps |
+| GET | `/api/v1/apps` | viewer | List WeaveApps (filter, sort, page) |
+| GET | `/api/v1/apps/{name}/executions` | viewer | List a job app's executions (filter, sort, page) |
 | POST | `/api/v1/apps` | editor | Create a WeaveApp |
 | GET | `/api/v1/apps/{name}` | viewer | Get a WeaveApp |
 | PUT | `/api/v1/apps/{name}` | editor | Replace a WeaveApp |
@@ -1490,13 +1549,13 @@ Responses: `201` on create, `409` if the name exists, `204` on delete; list/get/
 | PUT | `/api/v1/chains/{name}` | editor | Full replace a WeaveChain |
 | PATCH | `/api/v1/chains/{name}` | editor | Partial update a WeaveChain |
 | DELETE | `/api/v1/chains/{name}` | admin | Delete a WeaveChain |
-| GET | `/api/v1/triggers` | viewer | List all WeaveTriggers |
+| GET | `/api/v1/triggers` | viewer | List WeaveTriggers (filter, sort, page) |
 | POST | `/api/v1/triggers` | editor | Create a WeaveTrigger |
 | GET | `/api/v1/triggers/{name}` | viewer | Get a WeaveTrigger |
 | PUT | `/api/v1/triggers/{name}` | editor | Full replace a WeaveTrigger |
 | PATCH | `/api/v1/triggers/{name}` | editor | Partial update a WeaveTrigger |
 | DELETE | `/api/v1/triggers/{name}` | admin | Delete a WeaveTrigger |
-| GET | `/api/v1/batchtriggers` | viewer | List all BatchCron WeaveTriggers |
+| GET | `/api/v1/batchtriggers` | viewer | List BatchCron WeaveTriggers (filter, sort, page) |
 | POST | `/api/v1/batchtriggers` | editor | Create a BatchCron trigger + its jobs ConfigMap |
 | GET | `/api/v1/batchtriggers/{name}` | viewer | Get a BatchCron trigger |
 | PUT | `/api/v1/batchtriggers/{name}` | editor | Replace the job list YAML |
@@ -1505,13 +1564,14 @@ Responses: `201` on create, `409` if the name exists, `204` on delete; list/get/
 | POST | `/api/v1/batchtriggers/{name}/stop` | editor | Pause scheduling (`spec.paused=true`) |
 | POST | `/api/v1/batchtriggers/{name}/resume` | editor | Upload new job list and resume scheduling |
 | POST | `/api/v1/batchtriggers/validate` | editor | Validate job list YAML without touching Kubernetes |
-| GET | `/api/v1/kafkatriggers` | viewer | List all Kafka WeaveTriggers |
+| GET | `/api/v1/kafkatriggers` | viewer | List Kafka WeaveTriggers (filter, sort, page) |
 | POST | `/api/v1/kafkatriggers` | editor | Create a Kafka trigger |
 | GET | `/api/v1/kafkatriggers/{name}` | viewer | Get a Kafka trigger |
 | PUT | `/api/v1/kafkatriggers/{name}` | editor | Full replace `spec.kafka` |
 | PATCH | `/api/v1/kafkatriggers/{name}` | editor | Partial update a Kafka trigger |
 | DELETE | `/api/v1/kafkatriggers/{name}` | admin | Delete a Kafka trigger |
-| GET | `/api/v1/runs` | viewer | List all WeaveRuns |
+| GET | `/api/v1/runs` | viewer | List WeaveRuns (filter, sort, page) |
+| GET | `/api/v1/runs/facets` | viewer | Count WeaveRuns per phase/chain/trigger/source |
 | POST | `/api/v1/runs` | editor | Create a WeaveRun (manual trigger) |
 | GET | `/api/v1/runs/{name}` | viewer | Get a WeaveRun |
 | PUT | `/api/v1/runs/{name}` | editor | Full replace a WeaveRun |

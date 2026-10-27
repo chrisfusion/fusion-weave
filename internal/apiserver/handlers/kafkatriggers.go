@@ -31,20 +31,7 @@ func NewKafkaTriggerHandler(c client.Client, namespace string) *KafkaTriggerHand
 }
 
 func (h *KafkaTriggerHandler) List(w http.ResponseWriter, r *http.Request) {
-	var all weavev1alpha1.WeaveTriggerList
-	if err := h.client.List(r.Context(), &all, client.InNamespace(h.namespace)); err != nil {
-		internalError(w, r, err, "kind", "WeaveTrigger/Kafka")
-		return
-	}
-	// Filter to Kafka type in-process; no field indexer needed.
-	result := all
-	result.Items = result.Items[:0]
-	for _, item := range all.Items {
-		if item.Spec.Type == weavev1alpha1.TriggerKafka {
-			result.Items = append(result.Items, item)
-		}
-	}
-	writeJSON(w, http.StatusOK, result)
+	h.listTriggers(w, r, weavev1alpha1.TriggerKafka)
 }
 
 func (h *KafkaTriggerHandler) Create(w http.ResponseWriter, r *http.Request) {

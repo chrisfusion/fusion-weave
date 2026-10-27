@@ -46,20 +46,7 @@ func NewBatchTriggerHandler(c client.Client, namespace string) *BatchTriggerHand
 }
 
 func (h *BatchTriggerHandler) List(w http.ResponseWriter, r *http.Request) {
-	var all weavev1alpha1.WeaveTriggerList
-	if err := h.client.List(r.Context(), &all, client.InNamespace(h.namespace)); err != nil {
-		internalError(w, r, err, "kind", "WeaveTrigger/BatchCron")
-		return
-	}
-	// Filter to BatchCron type in-process; no field indexer needed.
-	result := all
-	result.Items = result.Items[:0]
-	for _, item := range all.Items {
-		if item.Spec.Type == weavev1alpha1.TriggerBatchCron {
-			result.Items = append(result.Items, item)
-		}
-	}
-	writeJSON(w, http.StatusOK, result)
+	h.listTriggers(w, r, weavev1alpha1.TriggerBatchCron)
 }
 
 func (h *BatchTriggerHandler) Create(w http.ResponseWriter, r *http.Request) {
