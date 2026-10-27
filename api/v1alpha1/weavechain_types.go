@@ -49,11 +49,11 @@ const (
 type WeaveDeployHealthPhase string
 
 const (
-	DeployHealthHealthy    WeaveDeployHealthPhase = "Healthy"
-	DeployHealthUnhealthy  WeaveDeployHealthPhase = "Unhealthy"
+	DeployHealthHealthy     WeaveDeployHealthPhase = "Healthy"
+	DeployHealthUnhealthy   WeaveDeployHealthPhase = "Unhealthy"
 	DeployHealthRollingBack WeaveDeployHealthPhase = "RollingBack"
-	DeployHealthRolledBack WeaveDeployHealthPhase = "RolledBack"
-	DeployHealthUnknown    WeaveDeployHealthPhase = "Unknown"
+	DeployHealthRolledBack  WeaveDeployHealthPhase = "RolledBack"
+	DeployHealthUnknown     WeaveDeployHealthPhase = "Unknown"
 )
 
 // WeaveActiveDeploymentStatus tracks the health of a Deployment created by a deploy step.

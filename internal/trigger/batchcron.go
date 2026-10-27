@@ -30,7 +30,7 @@ type heapEntry struct {
 // jobHeap implements container/heap.Interface sorted by next fire time (min-heap).
 type jobHeap []heapEntry
 
-func (h jobHeap) Len() int            { return len(h) }
+func (h jobHeap) Len() int           { return len(h) }
 func (h jobHeap) Less(i, j int) bool { return h[i].next.Before(h[j].next) }
 func (h jobHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 

@@ -20,18 +20,18 @@ type RunSummary struct {
 	Name           string                      `json:"name"`
 	Chain          string                      `json:"chain"`
 	Phase          weavev1alpha1.WeaveRunPhase `json:"phase"`
-	StartTime      *metav1.Time               `json:"startTime,omitempty"`
-	CompletionTime *metav1.Time               `json:"completionTime,omitempty"`
-	StepCount      int                        `json:"stepCount"`
-	FailedSteps    int                        `json:"failedSteps"`
-	Message        string                     `json:"message,omitempty"`
+	StartTime      *metav1.Time                `json:"startTime,omitempty"`
+	CompletionTime *metav1.Time                `json:"completionTime,omitempty"`
+	StepCount      int                         `json:"stepCount"`
+	FailedSteps    int                         `json:"failedSteps"`
+	Message        string                      `json:"message,omitempty"`
 }
 
 // RunDetail combines a WeaveRun with its associated batch/v1 Jobs and Events.
 type RunDetail struct {
 	Run    weavev1alpha1.WeaveRun `json:"run"`
-	Jobs   []batchv1.Job         `json:"jobs"`
-	Events []corev1.Event        `json:"events"`
+	Jobs   []batchv1.Job          `json:"jobs"`
+	Events []corev1.Event         `json:"events"`
 }
 
 // RunsHandler serves GET /monitor/v1/runs and GET /monitor/v1/runs/{name}.

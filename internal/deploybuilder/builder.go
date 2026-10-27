@@ -390,8 +390,8 @@ func BuildFromOverride(
 ) *appsv1.Deployment {
 	name := RunDeploymentName(runName, stepName)
 	labels := map[string]string{
-		"fusion-platform.io/run":  runName,
-		StepLabel:                 stepName,
+		"fusion-platform.io/run": runName,
+		StepLabel:                stepName,
 	}
 
 	podSC := sec.PodSecurityContext

@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	corev1 "k8s.io/api/core/v1"
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // BatchJob is a scheduler-ready representation of one entry from the batch YAML.

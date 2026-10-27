@@ -37,9 +37,9 @@ type WebhookServer struct {
 	FireCh      chan<- FireRequest
 	TokenLookup TokenLookup
 
-	mu       sync.RWMutex
-	routes   map[string]routeEntry // path -> routeEntry
-	server   *http.Server
+	mu     sync.RWMutex
+	routes map[string]routeEntry // path -> routeEntry
+	server *http.Server
 }
 
 type routeEntry struct {

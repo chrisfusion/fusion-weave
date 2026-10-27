@@ -22,9 +22,9 @@ const batchJobsKey = "jobs.yaml"
 
 // batchTriggerRequest is the body for Create and Update.
 type batchTriggerRequest struct {
-	Name     string                            `json:"name"`
-	ChainRef corev1.LocalObjectReference       `json:"chainRef"`
-	Jobs     string                            `json:"jobs"`
+	Name     string                      `json:"name"`
+	ChainRef corev1.LocalObjectReference `json:"chainRef"`
+	Jobs     string                      `json:"jobs"`
 }
 
 // resumeRequest is the body for the Resume action.

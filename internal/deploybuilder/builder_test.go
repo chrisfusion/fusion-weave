@@ -774,8 +774,8 @@ func TestBuildService_TargetPort_ExplicitValue(t *testing.T) {
 func tmplWithIngressRules(ports []weavev1alpha1.WeaveServicePort, rules []weavev1alpha1.WeaveIngressRule) *weavev1alpha1.WeaveServiceTemplate {
 	return &weavev1alpha1.WeaveServiceTemplate{
 		Spec: weavev1alpha1.WeaveServiceTemplateSpec{
-			Image:  "myrepo/myapp:1.0",
-			Ports:  ports,
+			Image:   "myrepo/myapp:1.0",
+			Ports:   ports,
 			Ingress: &weavev1alpha1.WeaveIngressSpec{Rules: rules},
 		},
 	}

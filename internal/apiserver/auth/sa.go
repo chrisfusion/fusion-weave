@@ -75,4 +75,3 @@ func extractSAName(username string) string {
 	}
 	return ""
 }
-
