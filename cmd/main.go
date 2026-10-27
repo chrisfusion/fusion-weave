@@ -271,6 +271,12 @@ func main() {
 	appReconciler.FusionIndexURL = fusionIndexURL
 	appReconciler.LoaderImage = loaderImage
 	appReconciler.WritablePaths = writablePaths
+	runnerWritablePaths, err := parseJSONMapEnv[[]string]("RUNNER_WRITABLE_PATHS")
+	if err != nil {
+		logger.Error(err, "invalid RUNNER_WRITABLE_PATHS")
+		os.Exit(1)
+	}
+	appReconciler.RunnerWritablePaths = runnerWritablePaths
 	appReconciler.Ingress = ingressCfg
 	appReconciler.CodeSourcePollInterval = codePollInterval
 	appReconciler.AllowedImagePrefixes = imagepolicy.ParsePrefixes(os.Getenv("ALLOWED_IMAGE_PREFIXES"))

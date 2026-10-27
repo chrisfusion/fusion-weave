@@ -203,6 +203,14 @@ codeSource:
     - /tmp
     - /home/nonroot
     - /weave-work
+  # runnerWritablePaths adds writable emptyDirs to WeaveApps by the artifact's
+  # metadata.yaml runner.type, on top of writablePaths (e.g. where a runner type
+  # writes config/caches under readOnlyRootFilesystem). A WeaveApp appends its own
+  # with spec.writablePaths. JSON-encoded into RUNNER_WRITABLE_PATHS.
+  # Example:
+  #   runnerWritablePaths:
+  #     streamlit: [/home/nonroot/.streamlit]
+  runnerWritablePaths: {}
 
 # imageOverrides gates WeaveRun.spec.imageOverrides (run-level custom images).
 # allowedPrefixes is a list of image-reference prefixes (e.g. "registry.example.com/customer-a/");

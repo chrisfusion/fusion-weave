@@ -76,6 +76,9 @@ type WeaveAppReconciler struct {
 	WritablePaths          []string
 	Ingress                deploybuilder.IngressConfig
 	CodeSourcePollInterval time.Duration
+	// RunnerWritablePaths is RUNNER_WRITABLE_PATHS: extra emptyDir paths keyed by
+	// the artifact's metadata.yaml runner.type.
+	RunnerWritablePaths map[string][]string
 	// AllowedImagePrefixes is ALLOWED_IMAGE_PREFIXES; empty = images unrestricted.
 	AllowedImagePrefixes []string
 
@@ -177,6 +180,9 @@ func (r *WeaveAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 func (r *WeaveAppReconciler) validate(app *weavev1alpha1.WeaveApp) string {
 	spec := &app.Spec
 	if msg := validateAppImages(spec, r.AllowedImagePrefixes); msg != "" {
+		return msg
+	}
+	if msg := validateAppWritablePaths(spec); msg != "" {
 		return msg
 	}
 	switch spec.Type {
@@ -387,6 +393,7 @@ func (r *WeaveAppReconciler) reconcileService(ctx context.Context, app *weavev1a
 
 	desired := deploybuilder.BuildFromOverride(tmpl, override, meta, app.Name, appStepName, app.Namespace,
 		r.SecurityDefaults, version, r.FusionIndexURL, r.LoaderImage, r.WritablePaths, "", false)
+	applyWritablePaths(&desired.Spec.Template.Spec, appWritablePaths(r.RunnerWritablePaths, meta, &app.Spec))
 	desired.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 
 	var existing appsv1.Deployment
@@ -626,6 +633,7 @@ func (r *WeaveAppReconciler) launchExecution(ctx context.Context, app *weavev1al
 	}
 	job := jobbuilder.Build(tmpl, step, run, 0, "", "", r.SecurityDefaults, "", csMeta, csVersion,
 		r.FusionIndexURL, r.LoaderImage, r.WritablePaths, unsafeEnv, extRef, extSecretName)
+	applyWritablePaths(&job.Spec.Template.Spec, appWritablePaths(r.RunnerWritablePaths, csMeta, &app.Spec))
 	job.OwnerReferences = []metav1.OwnerReference{*ownerRef}
 	job.Labels[AppLabel] = app.Name
 	job.Labels[EntrypointLabel] = ep.Name

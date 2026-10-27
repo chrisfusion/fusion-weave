@@ -5,6 +5,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -43,6 +44,22 @@ const (
 	WeaveAppExecutionSucceeded WeaveAppExecutionPhase = "Succeeded"
 	WeaveAppExecutionFailed    WeaveAppExecutionPhase = "Failed"
 )
+
+// WeaveAppWritablePath is one writable emptyDir mount.
+type WeaveAppWritablePath struct {
+	// MountPath is the absolute path inside the container (e.g. /var/cache/nginx).
+	// +kubebuilder:validation:Pattern=`^/.+`
+	MountPath string `json:"mountPath"`
+
+	// SizeLimit caps the emptyDir (e.g. 200Mi); the pod is evicted when it is exceeded.
+	// +optional
+	SizeLimit *resource.Quantity `json:"sizeLimit,omitempty"`
+
+	// Medium "Memory" backs the emptyDir with tmpfs (counts against the memory limit).
+	// +kubebuilder:validation:Enum=Memory
+	// +optional
+	Medium corev1.StorageMedium `json:"medium,omitempty"`
+}
 
 // WeaveAppService configures the Deployment/Service/Ingress of a type=service app.
 type WeaveAppService struct {
@@ -196,6 +213,14 @@ type WeaveAppSpec struct {
 	// Volumes declares secrets and configmaps to mount into the container.
 	// +optional
 	Volumes []WeaveVolumeMount `json:"volumes,omitempty"`
+
+	// WritablePaths mounts a writable emptyDir at each path into the app container
+	// (and the code-loader init container), for images that run with
+	// readOnlyRootFilesystem: true. Appended to the operator-wide WRITABLE_PATHS
+	// (codeSource apps) and the runner-type codeSource.runnerWritablePaths; for a
+	// path already mounted by those, an entry here only sets sizeLimit/medium.
+	// +optional
+	WritablePaths []WeaveAppWritablePath `json:"writablePaths,omitempty"`
 
 	// ServiceAccountName is the pod service account to use.
 	// +optional

@@ -56,6 +56,9 @@ spec:
               value: ""
             - name: WRITABLE_PATHS
               value: "/tmp:/home/nonroot:/weave-work"
+            # Optional, WeaveApps only: extra emptyDir paths by metadata.yaml runner.type (JSON).
+            # - name: RUNNER_WRITABLE_PATHS
+            #   value: '{"streamlit":["/home/nonroot/.streamlit"]}'
             # Local dev: images allowed for run/trigger overrides and for WeaveApps. The runner image must be
             # listed for codeSource apps (WeaveApp images are checked against this list when it is set);
             # empty = overrides disabled, apps unrestricted.

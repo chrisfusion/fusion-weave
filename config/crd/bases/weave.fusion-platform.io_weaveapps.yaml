@@ -1523,6 +1523,39 @@ spec:
                   - name
                   type: object
                 type: array
+              writablePaths:
+                description: |-
+                  WritablePaths mounts a writable emptyDir at each path into the app container
+                  (and the code-loader init container), for images that run with
+                  readOnlyRootFilesystem: true. Appended to the operator-wide WRITABLE_PATHS
+                  (codeSource apps) and the runner-type codeSource.runnerWritablePaths; for a
+                  path already mounted by those, an entry here only sets sizeLimit/medium.
+                items:
+                  description: WeaveAppWritablePath is one writable emptyDir mount.
+                  properties:
+                    medium:
+                      description: Medium "Memory" backs the emptyDir with tmpfs (counts
+                        against the memory limit).
+                      enum:
+                      - Memory
+                      type: string
+                    mountPath:
+                      description: MountPath is the absolute path inside the container
+                        (e.g. /var/cache/nginx).
+                      pattern: ^/.+
+                      type: string
+                    sizeLimit:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: SizeLimit caps the emptyDir (e.g. 200Mi); the pod
+                        is evicted when it is exceeded.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                  required:
+                  - mountPath
+                  type: object
+                type: array
             required:
             - image
             - type

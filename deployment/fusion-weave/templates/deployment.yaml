@@ -91,6 +91,10 @@ spec:
             - name: WRITABLE_PATHS
               value: {{ join ":" $cs.writablePaths | quote }}
             {{- end }}
+            {{- if $cs.runnerWritablePaths }}
+            - name: RUNNER_WRITABLE_PATHS
+              value: {{ $cs.runnerWritablePaths | toJson | quote }}
+            {{- end }}
             {{- if $ingress.hostSuffix }}
             - name: INGRESS_HOST_SUFFIX
               value: {{ $ingress.hostSuffix | quote }}
