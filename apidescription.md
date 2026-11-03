@@ -1490,6 +1490,22 @@ Fire an entrypoint on demand: `POST /api/v1/apps/{name}/fire` with `{"entrypoint
 
 List executions of a job app: `GET /api/v1/apps/{name}/executions` filters, sorts and pages `status.executions` (`?phase=Failed&entrypoint=nightly`, see [List filtering, sorting and pagination](#list-filtering-sorting-and-pagination)). Response: `{"metadata":{"continue":..., "remainingItemCount":...}, "items":[<execution>...]}`; `404` for an unknown app.
 
+Export as gitops manifest: `GET /api/v1/apps/{name}/manifest` → `200` with `Content-Type: application/yaml`, ready to commit to a Flux repo; `404` for an unknown app. Contains `apiVersion`, `kind`, `metadata.name`, `metadata.labels`, `metadata.annotations` and `spec` as stored (CRD defaults included). Removed: `status`, `metadata.namespace` (the repo is applied into the customer's pinned namespace) and all cluster-managed metadata (`uid`, `resourceVersion`, `generation`, `creationTimestamp`, `managedFields`, `ownerReferences`, `finalizers`, …), the annotations `kubectl.kubernetes.io/last-applied-configuration` and `fusion-platform.io/fire` (one-shot, would re-fire on every apply), and the labels `kustomize.toolkit.fluxcd.io/*` (Flux sets its own) and `fusion-platform.io/managed-by`. Empty label/annotation maps are omitted. `?download=true` adds `Content-Disposition: attachment; filename="weaveapp-<name>.yaml"` (the kind prefix keeps downloads of different Weave kinds apart).
+
+```yaml
+GET /api/v1/apps/report/manifest
+apiVersion: weave.fusion-platform.io/v1alpha1
+kind: WeaveApp
+metadata:
+  name: report
+spec:
+  entrypoints:
+  - name: nightly
+    schedule: 0 0 2 * * *
+  image: registry/py:1.0
+  type: job
+```
+
 ### Examples
 
 ```json
@@ -1526,6 +1542,7 @@ Responses: `201` on create, `409` if the name exists, `204` on delete; list/get/
 | GET | `/readyz` | none | Readiness check |
 | GET | `/api/v1/apps` | viewer | List WeaveApps (filter, sort, page) |
 | GET | `/api/v1/apps/{name}/executions` | viewer | List a job app's executions (filter, sort, page) |
+| GET | `/api/v1/apps/{name}/manifest` | viewer | Export a WeaveApp as gitops-ready YAML (`?download=true`) |
 | POST | `/api/v1/apps` | editor | Create a WeaveApp |
 | GET | `/api/v1/apps/{name}` | viewer | Get a WeaveApp |
 | PUT | `/api/v1/apps/{name}` | editor | Replace a WeaveApp |

@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/yaml"
 
 	weavev1alpha1 "fusion-platform.io/fusion-weave/api/v1alpha1"
 )
@@ -117,5 +118,91 @@ func TestAppFire(t *testing.T) {
 	}
 	if ep := got.Annotations[weavev1alpha1.WeaveAppFireAnnotation]; ep != "main" {
 		t.Fatalf("fire annotation = %q, want main", ep)
+	}
+}
+
+func TestAppManifest(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := weavev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	app := &weavev1alpha1.WeaveApp{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "web", Namespace: "fusion", Finalizers: []string{"x/y"},
+			Labels: map[string]string{"team": "a", labelManagedBy: "manual", "kustomize.toolkit.fluxcd.io/name": "apps"},
+			Annotations: map[string]string{
+				"note": "keep", weavev1alpha1.WeaveAppFireAnnotation: "main",
+				"kubectl.kubernetes.io/last-applied-configuration": "{}",
+			},
+		},
+		Spec:   weavev1alpha1.WeaveAppSpec{Type: weavev1alpha1.WeaveAppTypeJob, Image: "busybox:1.36"},
+		Status: weavev1alpha1.WeaveAppStatus{Phase: weavev1alpha1.WeaveAppPhaseReady},
+	}
+	bare := &weavev1alpha1.WeaveApp{
+		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: "fusion", Labels: map[string]string{labelManagedBy: "wizard"}},
+		Spec:       weavev1alpha1.WeaveAppSpec{Type: weavev1alpha1.WeaveAppTypeJob, Image: "busybox:1.36"},
+	}
+	h := NewAppHandler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, bare).Build(), "fusion", nil).(*AppHandler)
+	get := func(name, query string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/apps/"+name+"/manifest"+query, nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("name", name)
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		w := httptest.NewRecorder()
+		h.Manifest(w, req)
+		return w
+	}
+
+	w := get("web", "")
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/yaml" {
+		t.Fatalf("got %d %q: %s", w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != "" {
+		t.Fatalf("unexpected Content-Disposition %q", cd)
+	}
+	var got map[string]any
+	if err := yaml.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["apiVersion"] != "weave.fusion-platform.io/v1alpha1" || got["kind"] != "WeaveApp" {
+		t.Fatalf("type meta: %v %v", got["apiVersion"], got["kind"])
+	}
+	if _, ok := got["status"]; ok {
+		t.Fatal("status not stripped")
+	}
+	meta := got["metadata"].(map[string]any)
+	for _, f := range []string{"namespace", "resourceVersion", "creationTimestamp", "finalizers", "uid"} {
+		if _, ok := meta[f]; ok {
+			t.Errorf("metadata.%s not stripped", f)
+		}
+	}
+	if meta["name"] != "web" {
+		t.Errorf("name = %v", meta["name"])
+	}
+	if lbl := meta["labels"].(map[string]any); len(lbl) != 1 || lbl["team"] != "a" {
+		t.Errorf("labels = %v", lbl)
+	}
+	if ann := meta["annotations"].(map[string]any); len(ann) != 1 || ann["note"] != "keep" {
+		t.Errorf("annotations = %v", ann)
+	}
+	spec := got["spec"].(map[string]any)
+	if spec["type"] != "job" || spec["image"] != "busybox:1.36" {
+		t.Errorf("spec = %v", spec)
+	}
+
+	// Labels emptied by stripping disappear entirely.
+	w = get("bare", "?download=true")
+	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="weaveapp-bare.yaml"` {
+		t.Fatalf("Content-Disposition = %q", cd)
+	}
+	if strings.Contains(w.Body.String(), "labels") {
+		t.Fatalf("empty labels kept:\n%s", w.Body.String())
+	}
+
+	if w := get("missing", ""); w.Code != http.StatusNotFound {
+		t.Fatalf("missing: got %d", w.Code)
 	}
 }

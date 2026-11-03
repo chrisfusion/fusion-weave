@@ -117,6 +117,11 @@ func (h *AppHandler) Executions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newPagedList(page))
 }
 
+// Manifest serves the app as gitops-ready YAML (see writeManifest).
+func (h *AppHandler) Manifest(w http.ResponseWriter, r *http.Request) {
+	h.writeManifest(w, r, &weavev1alpha1.WeaveApp{})
+}
+
 // lastExecutionStart is the start of the app's most recent execution (zero if none).
 func lastExecutionStart(a *weavev1alpha1.WeaveApp) time.Time {
 	var last time.Time

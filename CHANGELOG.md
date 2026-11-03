@@ -7,6 +7,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `GET /api/v1/apps/{name}/manifest` (viewer): the WeaveApp as gitops-ready YAML (`application/yaml`) — `status`, `metadata.namespace`, cluster-managed metadata, the `last-applied-configuration`/`fusion-platform.io/fire` annotations and the Flux/`managed-by` labels stripped; `?download=true` names the file `weaveapp-<name>.yaml`. Shared `writeManifest` helper (`internal/apiserver/handlers/manifest.go`) so other Weave kinds can get the same `/{resource}/{name}/manifest` route.
+
 ---
 
 ## [0.7.0] — 2026-10-27
