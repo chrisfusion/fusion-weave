@@ -1,5 +1,7 @@
 # fusion-weave
 
+> Cross-repo context (platform, contracts, CRDs, conventions, known issues): `../fusion-okf/bundle/index.md`, this service: `../fusion-okf/bundle/services/fusion-weave.md`. This file stays authoritative for repo-internal details.
+
 ## Changelog
 Every bugfix and new feature must be recorded in `CHANGELOG.md` (Keep a Changelog format).
 - Add entries under `## [Unreleased]` as you work; bump a version heading when releasing.
